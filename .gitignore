@@ -1,0 +1,8 @@
+.sesskey
+.venv/
+__pycache__/
+.python-version
+.env
+template/
+*.json
+output/
