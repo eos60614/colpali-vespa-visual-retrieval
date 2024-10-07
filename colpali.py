@@ -256,7 +256,7 @@ def gen_similarity_map_new(
     )
     ax = annotate_plot(ax, query, token_to_show)
     # save the figure
-    save_figure(fig, f"similarity_map_{token_to_show}.png")
+    # save_figure(fig, f"similarity_map_{token_to_show}.png")
     return fig, ax
 
 
