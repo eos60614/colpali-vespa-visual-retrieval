@@ -3,7 +3,7 @@
 import torch
 from PIL import Image
 import numpy as np
-from typing import cast
+from typing import cast, Generator
 from pathlib import Path
 import base64
 from io import BytesIO
@@ -119,7 +119,7 @@ def gen_similarity_maps(
     token_idx_map: dict,
     images: List[Union[Path, str]],
     vespa_sim_maps: List[str],
-) -> List[Dict[str, str]]:
+) -> Generator[Tuple[int, str, str], None, None]:
     """
     Generate similarity maps for the given images and query, and return base64-encoded blended images.
 
@@ -134,8 +134,9 @@ def gen_similarity_maps(
         images (List[Union[Path, str]]): List of image paths or base64-encoded strings.
         vespa_sim_maps (List[str]): List of Vespa similarity maps.
 
-    Returns:
-        List[Dict[str, str]]: A list where each item is a dictionary mapping tokens to base64-encoded blended images.
+    Yields:
+        Tuple[int, str, str]: A tuple containing the image index, the selected token, and the base64-encoded image.
+
     """
 
     start = time.perf_counter()
@@ -302,11 +303,7 @@ def gen_similarity_maps(
 
             # Store the base64-encoded image
             result_per_image[token] = blended_img_base64
-        results.append(result_per_image)
-    end3 = time.perf_counter()
-    print(f"Collecting blended images took: {end3 - start3} s")
-    print(f"Total heatmap generation took: {end3 - start} s")
-    return results
+            yield idx, token, blended_img_base64
 
 
 def get_query_embeddings_and_token_map(
@@ -369,23 +366,32 @@ async def query_vespa_default(
 async def query_vespa_bm25(
     app: Vespa,
     query: str,
+    q_emb: torch.Tensor,
     hits: int = 3,
     timeout: str = "10s",
     **kwargs,
 ) -> dict:
     async with app.asyncio(connections=1, total_timeout=120) as session:
+        query_embedding = format_q_embs(q_emb)
+
+        start = time.perf_counter()
         response: VespaQueryResponse = await session.query(
             body={
-                "yql": "select id,title,url,full_image,page_number,snippet,text from pdf_page where userQuery();",
+                "yql": "select id,title,url,full_image,page_number,snippet,text,summaryfeatures from pdf_page where userQuery();",
                 "ranking": "bm25",
                 "query": query,
                 "timeout": timeout,
                 "hits": hits,
+                "input.query(qt)": query_embedding,
                 "presentation.timing": True,
                 **kwargs,
             },
         )
         assert response.is_successful(), response.json
+        stop = time.perf_counter()
+        print(
+            f"Query time + data transfer took: {stop - start} s, vespa said searchtime was {response.json.get('timing', {}).get('searchtime', -1)} s"
+        )
     return format_query_results(query, response)
 
 
@@ -451,7 +457,7 @@ async def query_vespa_nearest_neighbor(
                 **query_tensors,
                 "presentation.timing": True,
                 # if we use rank({nn_string}, userQuery()), dynamic summary doesn't work, see https://github.com/vespa-engine/vespa/issues/28704
-                "yql": f"select id,title,snippet,text,url,full_image,page_number from pdf_page where {nn_string} or userQuery()",
+                "yql": f"select id,title,snippet,text,url,full_image,page_number,summaryfeatures from pdf_page where {nn_string} or userQuery()",
                 "ranking.profile": "retrieval-and-rerank",
                 "timeout": timeout,
                 "hits": hits,
@@ -489,7 +495,7 @@ async def get_result_from_query(
     elif ranking == "bm25+colpali":
         result = await query_vespa_default(app, query, q_embs)
     elif ranking == "bm25":
-        result = await query_vespa_bm25(app, query)
+        result = await query_vespa_bm25(app, query, q_embs)
     else:
         raise ValueError(f"Unsupported ranking: {ranking}")
     # Print score, title id, and text of the results
@@ -509,6 +515,8 @@ def add_sim_maps_to_result(
     query: str,
     q_embs: Any,
     token_to_idx: Dict[str, int],
+    query_id: str,
+    result_cache,
 ) -> Dict[str, Any]:
     vit_config = load_vit_config(model)
     imgs: List[str] = []
@@ -520,7 +528,7 @@ def add_sim_maps_to_result(
         vespa_sim_map = single_result["fields"].get("summaryfeatures", None)
         if vespa_sim_map:
             vespa_sim_maps.append(vespa_sim_map)
-    sim_map_imgs = gen_similarity_maps(
+    sim_map_imgs_generator = gen_similarity_maps(
         model=model,
         processor=processor,
         device=model.device,
@@ -531,9 +539,14 @@ def add_sim_maps_to_result(
         images=imgs,
         vespa_sim_maps=vespa_sim_maps,
     )
-    for single_result, sim_map_dict in zip(result["root"]["children"], sim_map_imgs):
-        for token, sim_mapb64 in sim_map_dict.items():
-            single_result["fields"][f"sim_map_{token}"] = sim_mapb64
+    for img_idx, token, sim_mapb64 in sim_map_imgs_generator:
+        print(f"Created sim map for image {img_idx} and token {token}")
+        result["root"]["children"][img_idx]["fields"][f"sim_map_{token}"] = sim_mapb64
+        # Update result_cache with the new sim_map
+        result_cache.set(query_id, result)
+    # for single_result, sim_map_dict in zip(result["root"]["children"], sim_map_imgs):
+    #     for token, sim_mapb64 in sim_map_dict.items():
+    #         single_result["fields"][f"sim_map_{token}"] = sim_mapb64
     return result
 
 
