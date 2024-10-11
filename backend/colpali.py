@@ -132,6 +132,7 @@ def gen_similarity_maps(
         query_embs (torch.Tensor): Query embeddings.
         token_idx_map (dict): Mapping from tokens to their indices.
         images (List[Union[Path, str]]): List of image paths or base64-encoded strings.
+        vespa_sim_maps (List[str]): List of Vespa similarity maps.
 
     Returns:
         List[Dict[str, str]]: A list where each item is a dictionary mapping tokens to base64-encoded blended images.
@@ -178,8 +179,13 @@ def gen_similarity_maps(
         # ... and so on.
         # Now turn these into a tensor of same shape as previous similarity map
         vespa_sim_map_tensor = torch.zeros(
-                (len(vespa_sim_maps), query_embs.size(dim=1), vit_config.n_patch_per_dim, vit_config.n_patch_per_dim)
+            (
+                len(vespa_sim_maps),
+                query_embs.size(dim=1),
+                vit_config.n_patch_per_dim,
+                vit_config.n_patch_per_dim,
             )
+        )
         for idx, vespa_sim_map in enumerate(vespa_sim_maps):
             for cell in vespa_sim_map["similarities"]["cells"]:
                 patch = int(cell["address"]["patch"])
@@ -187,10 +193,17 @@ def gen_similarity_maps(
                     continue
                 query_token = int(cell["address"]["querytoken"])
                 value = cell["value"]
-                vespa_sim_map_tensor[idx, int(query_token), int(patch) // vit_config.n_patch_per_dim, int(patch) % vit_config.n_patch_per_dim] = value            
+                vespa_sim_map_tensor[
+                    idx,
+                    int(query_token),
+                    int(patch) // vit_config.n_patch_per_dim,
+                    int(patch) % vit_config.n_patch_per_dim,
+                ] = value
 
         # Normalize the similarity map per query token
-        similarity_map_normalized = normalize_similarity_map_per_query_token(vespa_sim_map_tensor)
+        similarity_map_normalized = normalize_similarity_map_per_query_token(
+            vespa_sim_map_tensor
+        )
     else:
         # Preprocess inputs
         print("Computing similarity maps")
@@ -227,7 +240,9 @@ def gen_similarity_maps(
         print(f"Similarity map computation took: {end2 - start2} s")
 
         # Normalize the similarity map per query token
-        similarity_map_normalized = normalize_similarity_map_per_query_token(similarity_map)
+        similarity_map_normalized = normalize_similarity_map_per_query_token(
+            similarity_map
+        )
 
     # Collect the blended images
     start3 = time.perf_counter()
@@ -242,8 +257,8 @@ def gen_similarity_maps(
             # Get the similarity map for this image and the selected token
             sim_map = similarity_map_normalized[idx, token_idx, :, :]  # Shape: (h, w)
 
-            # Move the similarity map to CPU and convert to NumPy array
-            sim_map_np = sim_map.cpu().numpy()
+            # Move the similarity map to CPU, convert to float (as BFloat16 not supported by Numpy) and convert to NumPy array
+            sim_map_np = sim_map.cpu().float().numpy()
 
             # Resize the similarity map to the original image size
             sim_map_img = Image.fromarray(sim_map_np)
@@ -344,7 +359,9 @@ async def query_vespa_default(
         )
         assert response.is_successful(), response.json
         stop = time.perf_counter()
-        print(f"Query time + data transfer took: {stop - start} s, vespa said searchtime was {response.json.get('timing', {}).get('searchtime', -1)} s")
+        print(
+            f"Query time + data transfer took: {stop - start} s, vespa said searchtime was {response.json.get('timing', {}).get('searchtime', -1)} s"
+        )
         open("response.json", "w").write(json.dumps(response.json))
     return format_query_results(query, response)
 
@@ -512,7 +529,7 @@ def add_sim_maps_to_result(
         query_embs=q_embs,
         token_idx_map=token_to_idx,
         images=imgs,
-        vespa_sim_maps=vespa_sim_maps
+        vespa_sim_maps=vespa_sim_maps,
     )
     for single_result, sim_map_dict in zip(result["root"]["children"], sim_map_imgs):
         for token, sim_mapb64 in sim_map_dict.items():
