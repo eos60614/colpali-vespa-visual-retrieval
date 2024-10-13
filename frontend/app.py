@@ -185,11 +185,11 @@ def Search(request, search_results=[]):
         Div(
             SearchBox(query_value=query_value, ranking_value=ranking_value),
             Div(
-                LoadingMessage()
-                if not search_results
-                else SearchResult(search_results),
+                LoadingMessage(),
                 id="search-results",  # This will be replaced by the search results
-            ),
+            )
+            if not search_results
+            else SearchResult(search_results),
             cls="grid",
         ),
         cls="grid",
