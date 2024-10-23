@@ -1,22 +1,25 @@
 import asyncio
+import hashlib
+import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from fasthtml.common import *
 from shad4fast import *
 from vespa.application import Vespa
-import time
 
-from backend.colpali import (
-    get_result_from_query,
-    get_query_embeddings_and_token_map,
-    add_sim_maps_to_result,
-    is_special_token,
-)
-from backend.vespa_app import get_vespa_app
 from backend.cache import LRUCache
+from backend.colpali import (
+    add_sim_maps_to_result,
+    get_query_embeddings_and_token_map,
+    get_result_from_query,
+    is_special_token,
+    get_full_image_from_vespa,
+)
 from backend.modelmanager import ModelManager
+from backend.vespa_app import get_vespa_app
 from frontend.app import (
+    ChatResult,
     Home,
     Search,
     SearchBox,
@@ -25,7 +28,10 @@ from frontend.app import (
     SimMapButtonReady,
 )
 from frontend.layout import Layout
-import hashlib
+import google.generativeai as genai
+from PIL import Image
+import io
+import base64
 
 highlight_js_theme_link = Link(id="highlight-theme", rel="stylesheet", href="")
 highlight_js_theme = Script(src="/static/js/highlightjs-theme.js")
@@ -35,15 +41,27 @@ highlight_js = HighlightJS(
     light="github",
 )
 
+overlayscrollbars_link = Link(
+    rel="stylesheet",
+    href="https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/styles/overlayscrollbars.min.css",
+    type="text/css",
+)
+overlayscrollbars_js = Script(
+    src="https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/browser/overlayscrollbars.browser.es5.min.js"
+)
+sselink = Script(src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js")
 
 app, rt = fast_app(
-    htmlkw={"cls": "h-full"},
+    htmlkw={"cls": "grid h-full"},
     pico=False,
     hdrs=(
         ShadHead(tw_cdn=False, theme_handle=True),
         highlight_js,
         highlight_js_theme_link,
         highlight_js_theme,
+        overlayscrollbars_link,
+        overlayscrollbars_js,
+        sselink,
     ),
 )
 vespa_app: Vespa = get_vespa_app()
@@ -53,6 +71,16 @@ task_cache = LRUCache(
     max_size=1000
 )  # Map from query_id to boolean value - False if not all results are ready.
 thread_pool = ThreadPoolExecutor()
+# Gemini config
+
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+GEMINI_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images. 
+If the user query is not an obvious question, reply with 'No question detected.'. Your response should be HTML formatted.
+This means that newlines will be replaced with <br> tags, bold text will be enclosed in <b> tags, and so on.
+"""
+gemini_model = genai.GenerativeModel(
+    "gemini-1.5-flash-8b", system_instruction=GEMINI_SYSTEM_PROMPT
+)
 
 
 @app.on_event("startup")
@@ -72,7 +100,7 @@ def serve_static(filepath: str):
 
 @rt("/")
 def get():
-    return Layout(Home())
+    return Layout(Main(Home()))
 
 
 @rt("/search")
@@ -86,16 +114,18 @@ def get(request):
     if not query_value:
         # Show SearchBox and a message for missing query
         return Layout(
-            Div(
-                SearchBox(query_value=query_value, ranking_value=ranking_value),
+            Main(
                 Div(
-                    P(
-                        "No query provided. Please enter a query.",
-                        cls="text-center text-muted-foreground",
+                    SearchBox(query_value=query_value, ranking_value=ranking_value),
+                    Div(
+                        P(
+                            "No query provided. Please enter a query.",
+                            cls="text-center text-muted-foreground",
+                        ),
+                        cls="p-10",
                     ),
-                    cls="p-10",
-                ),
-                cls="grid",
+                    cls="grid",
+                )
             )
         )
     # Generate a unique query_id based on the query and ranking value
@@ -107,7 +137,12 @@ def get(request):
     #     search_results = get_results_children(result)
     #     return Layout(Search(request, search_results))
     # Show the loading message if a query is provided
-    return Layout(Search(request))  # Show SearchBox and Loading message initially
+    return Layout(
+        Main(Search(request), data_overlayscrollbars_initialize=True, cls="border-t"),
+        Aside(
+            ChatResult(query_id=query_id, query=query_value), cls="border-t border-l"
+        ),
+    )  # Show SearchBox and Loading message initially
 
 
 @rt("/fetch_results")
@@ -215,15 +250,67 @@ async def get_sim_map(query_id: str, idx: int, token: str):
         sim_map_b64 = search_results[idx]["fields"].get(sim_map_key, None)
         if sim_map_b64 is None:
             return SimMapButtonPoll(query_id=query_id, idx=idx, token=token)
-        sim_map_img_src = f"data:image/jpeg;base64,{sim_map_b64}"
+        sim_map_img_src = f"data:image/png;base64,{sim_map_b64}"
         return SimMapButtonReady(
             query_id=query_id, idx=idx, token=token, img_src=sim_map_img_src
         )
 
 
+@app.get("/full_image")
+async def full_image(id: str):
+    """
+    Endpoint to get the full quality image for a given result id.
+    """
+    image_data = await get_full_image_from_vespa(vespa_app, id)
+
+    # Decode the base64 image data
+    # image_data = base64.b64decode(image_data)
+    image_data = "data:image/jpeg;base64," + image_data
+
+    return Img(
+        src=image_data,
+        alt="something",
+        cls="result-image w-full h-full object-contain",
+    )
+
+
+async def message_generator(query_id: str, query: str):
+    result = None
+    while result is None:
+        result = result_cache.get(query_id)
+        await asyncio.sleep(0.5)
+    search_results = get_results_children(result)
+    images = [result["fields"]["blur_image"] for result in search_results]
+    # from b64 to PIL image
+    images = [Image.open(io.BytesIO(base64.b64decode(img))) for img in images]
+
+    # If newlines are present in the response, the connection will be closed.
+    def replace_newline_with_br(text):
+        return text.replace("\n", "<br>")
+
+    response_text = ""
+    async for chunk in await gemini_model.generate_content_async(
+        images + ["\n\n Query: ", query], stream=True
+    ):
+        if chunk.text:
+            response_text += chunk.text
+            response_text = replace_newline_with_br(response_text)
+            yield f"event: message\ndata: {response_text}\n\n"
+            await asyncio.sleep(0.5)
+    yield "event: close\ndata: \n\n"
+
+
+@app.get("/get-message")
+async def get_message(query_id: str, query: str):
+    return StreamingResponse(
+        message_generator(query_id=query_id, query=query),
+        media_type="text/event-stream",
+    )
+
+
 @rt("/app")
 def get():
-    return Layout(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4"))
+    return Layout(Main(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4")))
 
 
 if __name__ == "__main__":

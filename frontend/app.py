@@ -131,9 +131,13 @@ def SearchBox(with_border=False, query_value="", ranking_value="nn+colpali"):
 
 def SampleQueries():
     sample_queries = [
-        "Percentage of non-fresh water as source?",
-        "Policies related to nature risk?",
-        "How much of produced water is recycled?",
+        "Proportion of female new hires 2021-2023?",
+        "Total amount of performance-based pay awarded in 2023?",
+        "What is the percentage distribution of employees with performance-based pay relative to the limit in 2023?",
+        "What is the breakdown of management costs by investment strategy in 2023?",
+        "2023 profit loss portfolio",
+        "net cash flow operating activities",
+        "fund currency basket returns",
     ]
 
     query_badges = []
@@ -193,21 +197,23 @@ def Search(request, search_results=[]):
     )
     return Div(
         Div(
-            SearchBox(query_value=query_value, ranking_value=ranking_value),
             Div(
-                LoadingMessage(),
-                id="search-results",  # This will be replaced by the search results
+                SearchBox(query_value=query_value, ranking_value=ranking_value),
+                Div(
+                    LoadingMessage(),
+                    id="search-results",  # This will be replaced by the search results
+                ),
+                cls="grid",
             ),
             cls="grid",
         ),
-        cls="grid",
     )
 
 
-def LoadingMessage():
+def LoadingMessage(display_text="Retrieving search results"):
     return Div(
         Lucide(icon="loader-circle", cls="size-5 mr-1.5 animate-spin"),
-        Span("Retrieving search results", cls="text-base text-center"),
+        Span(display_text, cls="text-base text-center"),
         cls="p-10 text-muted-foreground flex items-center justify-center",
         id="loading-indicator",
     )
@@ -250,7 +256,7 @@ def SearchResult(results: list, query_id: Optional[str] = None):
     result_items = []
     for idx, result in enumerate(results):
         fields = result["fields"]  # Extract the 'fields' part of each result
-        full_image_base64 = f"data:image/jpeg;base64,{fields['full_image']}"
+        blur_image_base64 = f"data:image/jpeg;base64,{fields['blur_image']}"
 
         # Filter sim_map fields that are words with 4 or more characters
         sim_map_fields = {
@@ -286,7 +292,7 @@ def SearchResult(results: list, query_id: Optional[str] = None):
             "Reset",
             variant="outline",
             size="sm",
-            data_image_src=full_image_base64,
+            data_image_src=blur_image_base64,
             cls="reset-button pointer-events-auto font-mono text-xs h-5 rounded-none px-2",
         )
 
@@ -312,7 +318,11 @@ def SearchResult(results: list, query_id: Optional[str] = None):
                     Div(
                         Div(
                             Img(
-                                src=full_image_base64,
+                                src=blur_image_base64,
+                                hx_get=f"/full_image?id={fields['id']}",
+                                style="filter: blur(5px);",
+                                hx_trigger="load",
+                                hx_swap="outerHTML",
                                 alt=fields["title"],
                                 cls="result-image w-full h-full object-contain",
                             ),
@@ -350,12 +360,35 @@ def SearchResult(results: list, query_id: Optional[str] = None):
                     ),
                     cls="bg-background px-3 py-5 hidden md:block",
                 ),
-                cls="grid grid-cols-1 md:grid-cols-2 col-span-2",
+                cls="grid grid-cols-1 md:grid-cols-2 col-span-2 border-t",
             )
         )
+
     return Div(
         *result_items,
         image_swapping,
         id="search-results",
         cls="grid grid-cols-2 gap-px bg-border",
+    )
+
+
+def ChatResult(query_id: str, query: str):
+    return Div(
+        Div("Chat", cls="text-xl font-semibold p-3"),
+        Div(
+            Div(
+                Div(
+                    LoadingMessage(display_text="Waiting for response..."),
+                    cls="bg-muted/80 dark:bg-muted/40 text-black dark:text-white p-2 rounded-md",
+                    hx_ext="sse",
+                    sse_connect=f"/get-message?query_id={query_id}&query={quote_plus(query)}",
+                    sse_swap="message",
+                    sse_close="close",
+                    hx_swap="innerHTML",
+                ),
+            ),
+            id="chat-messages",
+            cls="overflow-auto min-h-0 grid items-end px-3",
+        ),
+        cls="h-full grid grid-rows-[auto_1fr_auto] min-h-0 gap-3",
     )

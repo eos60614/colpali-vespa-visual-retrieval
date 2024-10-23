@@ -1,8 +1,10 @@
 .sesskey
 .venv/
 __pycache__/
+ipynb_checkpoints/
 .python-version
 .env
 template/
 *.json
 output/
+pdfs/
