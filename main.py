@@ -189,8 +189,6 @@ async def get(request, query: str, nn: bool = True):
     print(
         f"Search results fetched in {end - start:.2f} seconds, Vespa says searchtime was {result['timing']['searchtime']} seconds"
     )
-    # Add result to cache
-    result_cache.set(query_id, result)
     # Start generating the similarity map in the background
     asyncio.create_task(
         generate_similarity_map(
@@ -272,10 +270,15 @@ async def get_sim_map(query_id: str, idx: int, token: str):
 
 async def update_full_image_cache(docid: str, query_id: str, idx: int, image_data: str):
     result = result_cache.get(query_id)
-    try:
-        result["root"]["children"][idx]["fields"]["full_image"] = image_data
-    except KeyError as err:
-        print(f"Error updating full image cache: {err}")
+    if result is None:
+        await asyncio.sleep(0.5)
+        return
+    search_results = get_results_children(result)
+    # Check if idx exists in list of children
+    if idx >= len(search_results):
+        await asyncio.sleep(0.5)
+        return
+    search_results[idx]["fields"]["full_image"] = image_data
     result_cache.set(query_id, result)
     return
 
