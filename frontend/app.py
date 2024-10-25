@@ -229,9 +229,48 @@ def Home():
             Hero(),
             SearchBox(with_border=True),
             SampleQueries(),
-            cls="grid gap-8 -mt-[21vh]",
+            cls="grid gap-8 content-start mt-[13vh]",
         ),
-        cls="grid w-full h-full max-w-screen-md items-center gap-4 mx-auto",
+        cls="grid w-full h-full max-w-screen-md gap-4 mx-auto",
+    )
+
+
+def WhatIsThis():
+    return Div(
+        Div(
+            Div(
+                H1(
+                    "Vespa.ai + ColPali",
+                    cls="text-5xl font-bold tracking-wide md:tracking-wider",
+                ),
+                P(
+                    "Efficient Document Retrieval with Vision Language Models",
+                    cls="text-lg text-muted-foreground md:tracking-wide",
+                ),
+                Div(
+                    Img(
+                        src="/static/img/vespa-colpali.png",
+                        alt="Vespa and ColPali",
+                        cls="object-contain h-[377px]",
+                    ),
+                    cls="grid justify-center",
+                ),
+                Div(
+                    P(
+                        "This is a demo application showcasing the integration of Vespa.ai and ColPali for visual retrieval of documents.",
+                        cls="text-base",
+                    ),
+                    P(
+                        "The application uses a combination of neural networks and traditional search algorithms to retrieve relevant documents based on visual and textual queries.",
+                        cls="text-base",
+                    ),
+                    cls="grid gap-2 text-center",
+                ),
+                cls="grid gap-5 text-center",
+            ),
+            cls="grid gap-8 content-start mt-[8vh]",
+        ),
+        cls="grid w-full h-full max-w-screen-md gap-4 mx-auto",
     )
 
 
@@ -457,7 +496,7 @@ def SearchResult(results: list, query_id: Optional[str] = None):
         image_swapping,
         toggle_text_content,
         id="search-results",
-        cls="grid grid-cols-1 gap-px bg-border",
+        cls="grid grid-cols-1 gap-px bg-border min-h-0",
     )
 
 

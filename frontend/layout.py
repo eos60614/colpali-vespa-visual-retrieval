@@ -108,6 +108,11 @@ def ThemeToggle(variant="ghost", cls=None, **kwargs):
 def Links():
     return Nav(
         A(
+            Button("What's this?", variant="link"),
+            href="/what-is-this",
+        ),
+        Separator(orientation="vertical"),
+        A(
             Button(Lucide(icon="github"), size="icon", variant="ghost"),
             href="https://github.com/vespa-engine/vespa",
             target="_blank",
@@ -119,7 +124,7 @@ def Links():
         ),
         Separator(orientation="vertical"),
         ThemeToggle(),
-        cls="flex items-center space-x-3",
+        cls="flex items-center space-x-2",
     )
 
 
@@ -134,7 +139,7 @@ def Layout(*c, **kwargs):
             ),
             *c,
             **kwargs,
-            cls="grid grid-rows-[55px_1fr] min-h-0",
+            cls="grid grid-rows-[minmax(0,55px)_minmax(0,1fr)] min-h-0",
         ),
         layout_script,
         overlay_scrollbars,
