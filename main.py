@@ -1,36 +1,37 @@
 import asyncio
+import base64
 import os
 import time
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
 import google.generativeai as genai
+from fastcore.parallel import threaded
 from fasthtml.common import (
+    Aside,
     Div,
+    FileResponse,
+    HighlightJS,
     Img,
+    JSONResponse,
+    Link,
     Main,
     P,
-    Script,
-    Link,
-    fast_app,
-    HighlightJS,
-    FileResponse,
     RedirectResponse,
-    Aside,
+    Script,
     StreamingResponse,
-    JSONResponse,
+    fast_app,
     serve,
 )
+from PIL import Image
 from shad4fast import ShadHead
 from vespa.application import Vespa
-import base64
-from fastcore.parallel import threaded
-from PIL import Image
 
-from backend.colpali import get_query_embeddings_and_token_map, gen_similarity_maps
-from backend.modelmanager import ModelManager
+from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from frontend.app import (
+    AboutThisDemo,
     ChatResult,
     Home,
     Search,
@@ -38,7 +39,6 @@ from frontend.app import (
     SearchResult,
     SimMapButtonPoll,
     SimMapButtonReady,
-    AboutThisDemo,
 )
 from frontend.layout import Layout
 
@@ -90,10 +90,10 @@ thread_pool = ThreadPoolExecutor()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 GEMINI_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images. 
 If the user query can not be interpreted as a question, or if the answer to the query can not be inferred from the images,
-answer with the exact phrase "I am sorry, I do not have enough information in the image to answer your question.".
+answer with the exact phrase "I am sorry, I can't find enough relevant information on these pages to answer your question.".
 Your response should be HTML formatted, but only simple tags, such as <b>. <p>, <i>, <br> <ul> and <li> are allowed. No HTML tables.
 This means that newlines will be replaced with <br> tags, bold text will be enclosed in <b> tags, and so on.
-But, you should NOT include backticks (`) or HTML tags in your response.
+Do NOT include backticks (`) in your response. Only simple HTML tags and text.
 """
 gemini_model = genai.GenerativeModel(
     "gemini-1.5-flash-8b", system_instruction=GEMINI_SYSTEM_PROMPT
@@ -107,7 +107,7 @@ os.makedirs(SIM_MAP_DIR, exist_ok=True)
 
 @app.on_event("startup")
 def load_model_on_startup():
-    app.manager = ModelManager.get_instance()
+    app.sim_map_generator = SimMapGenerator()
     return
 
 
@@ -131,7 +131,7 @@ def serve_static(filepath: str):
 def get(session):
     if "session_id" not in session:
         session["session_id"] = str(uuid.uuid4())
-    return Layout(Main(Home()))
+    return Layout(Main(Home()), is_home=True)
 
 
 @rt("/about-this-demo")
@@ -140,19 +140,16 @@ def get():
 
 
 @rt("/search")
-def get(request):
-    # Extract the 'query' and 'ranking' parameters from the URL
-    query_value = request.query_params.get("query", "").strip()
-    ranking_value = request.query_params.get("ranking", "nn+colpali")
-    print("/search: Fetching results for ranking_value:", ranking_value)
+def get(request, query: str = "", ranking: str = "nn+colpali"):
+    print("/search: Fetching results for ranking_value:", ranking)
 
     # Always render the SearchBox first
-    if not query_value:
+    if not query:
         # Show SearchBox and a message for missing query
         return Layout(
             Main(
                 Div(
-                    SearchBox(query_value=query_value, ranking_value=ranking_value),
+                    SearchBox(query_value=query, ranking_value=ranking),
                     Div(
                         P(
                             "No query provided. Please enter a query.",
@@ -165,33 +162,15 @@ def get(request):
             )
         )
     # Generate a unique query_id based on the query and ranking value
-    query_id = generate_query_id(query_value, ranking_value)
+    query_id = generate_query_id(query, ranking)
     # Show the loading message if a query is provided
     return Layout(
         Main(Search(request), data_overlayscrollbars_initialize=True, cls="border-t"),
         Aside(
-            ChatResult(query_id=query_id, query=query_value),
+            ChatResult(query_id=query_id, query=query),
             cls="border-t border-l hidden md:block",
         ),
     )  # Show SearchBox and Loading message initially
-
-
-@rt("/fetch_results2")
-def get(query: str, ranking: str):
-    # 1. Get the results from Vespa (without sim_maps and full_images)
-    # Call search-endpoint in Vespa sync.
-
-    # 2. Kick off tasks to fetch sim_maps and full_images
-    # Sim maps - call search endpoint async.
-    # (A) New rank_profile that does not calculate sim_maps.
-    # (A) Make vespa endpoints take select_fields as a parameter.
-    # One sim map per image per token.
-    # the filename query_id_result_idx_token_idx.png
-    # Full image. based on the doc_id.
-    # Each of these tasks saves to disk.
-    # Need a cleanup task to delete old files.
-    # Polling endpoints for sim_maps and full_images checks if file exists and returns it.
-    pass
 
 
 @rt("/fetch_results")
@@ -203,9 +182,10 @@ async def get(session, request, query: str, ranking: str):
     query_id = generate_query_id(query, ranking)
     print(f"Query id in /fetch_results: {query_id}")
     # Run the embedding and query against Vespa app
-    model = app.manager.model
-    processor = app.manager.processor
-    q_embs, idx_to_token = get_query_embeddings_and_token_map(processor, model, query)
+
+    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
+        query
+    )
 
     start = time.perf_counter()
     # Fetch real search results from Vespa
@@ -219,15 +199,20 @@ async def get(session, request, query: str, ranking: str):
     print(
         f"Search results fetched in {end - start:.2f} seconds, Vespa says searchtime was {result['timing']['searchtime']} seconds"
     )
+    search_time = result["timing"]["searchtime"]
+    total_count = result["root"]["fields"]["totalCount"]
+
     search_results = vespa_app.results_to_search_results(result, idx_to_token)
+
     get_and_store_sim_maps(
         query_id=query_id,
         query=query,
         q_embs=q_embs,
         ranking=ranking,
         idx_to_token=idx_to_token,
+        doc_ids=[result["fields"]["id"] for result in search_results],
     )
-    return SearchResult(search_results, query_id)
+    return SearchResult(search_results, query, query_id, search_time, total_count)
 
 
 def get_results_children(result):
@@ -247,7 +232,9 @@ async def poll_vespa_keepalive():
 
 
 @threaded
-def get_and_store_sim_maps(query_id, query: str, q_embs, ranking, idx_to_token):
+def get_and_store_sim_maps(
+    query_id, query: str, q_embs, ranking, idx_to_token, doc_ids
+):
     ranking_sim = ranking + "_sim"
     vespa_sim_maps = vespa_app.get_sim_maps_from_query(
         query=query,
@@ -255,9 +242,7 @@ def get_and_store_sim_maps(query_id, query: str, q_embs, ranking, idx_to_token):
         ranking=ranking_sim,
         idx_to_token=idx_to_token,
     )
-    img_paths = [
-        IMG_DIR / f"{query_id}_{idx}.jpg" for idx in range(len(vespa_sim_maps))
-    ]
+    img_paths = [IMG_DIR / f"{doc_id}.jpg" for doc_id in doc_ids]
     # All images should be downloaded, but best to wait 5 secs
     max_wait = 5
     start_time = time.time()
@@ -269,10 +254,7 @@ def get_and_store_sim_maps(query_id, query: str, q_embs, ranking, idx_to_token):
     if not all([os.path.exists(img_path) for img_path in img_paths]):
         print(f"Images not ready in 5 seconds for query_id: {query_id}")
         return False
-    sim_map_generator = gen_similarity_maps(
-        model=app.manager.model,
-        processor=app.manager.processor,
-        device=app.manager.device,
+    sim_map_generator = app.sim_map_generator.gen_similarity_maps(
         query=query,
         query_embs=q_embs,
         token_idx_map=idx_to_token,
@@ -312,17 +294,17 @@ async def get_sim_map(query_id: str, idx: int, token: str, token_idx: int):
 
 
 @app.get("/full_image")
-async def full_image(docid: str, query_id: str, idx: int):
+async def full_image(doc_id: str):
     """
     Endpoint to get the full quality image for a given result id.
     """
-    img_path = IMG_DIR / f"{query_id}_{idx}.jpg"
+    img_path = IMG_DIR / f"{doc_id}.jpg"
     if not os.path.exists(img_path):
-        image_data = await vespa_app.get_full_image_from_vespa(docid)
+        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
         # image data is base 64 encoded string. Save it to disk as jpg.
         with open(img_path, "wb") as f:
             f.write(base64.b64decode(image_data))
-        print(f"Full image saved to disk for query_id: {query_id}, idx: {idx}")
+        print(f"Full image saved to disk for doc_id: {doc_id}")
     else:
         with open(img_path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
@@ -334,8 +316,9 @@ async def full_image(docid: str, query_id: str, idx: int):
 
 
 @rt("/suggestions")
-async def get_suggestions(request):
-    query = request.query_params.get("query", "").lower().strip()
+async def get_suggestions(query: str = ""):
+    """Endpoint to get suggestions as user types in the search box"""
+    query = query.lower().strip()
 
     if query:
         suggestions = await vespa_app.get_suggestions(query)
@@ -345,15 +328,20 @@ async def get_suggestions(request):
     return JSONResponse({"suggestions": []})
 
 
-async def message_generator(query_id: str, query: str):
-    images = []
+async def message_generator(query_id: str, query: str, doc_ids: list):
+    """Generator function to yield SSE messages for chat response"""
+    images = {}
     num_images = 3  # Number of images before firing chat request
     max_wait = 10  # seconds
     start_time = time.time()
     # Check if full images are ready on disk
-    while len(images) < num_images and time.time() - start_time < max_wait:
+    while (
+        len(images) < min(num_images, len(doc_ids))
+        and time.time() - start_time < max_wait
+    ):
         for idx in range(num_images):
-            if not os.path.exists(IMG_DIR / f"{query_id}_{idx}.jpg"):
+            image_filename = IMG_DIR / f"{doc_ids[idx]}.jpg"
+            if not os.path.exists(image_filename):
                 print(
                     f"Message generator: Full image not ready for query_id: {query_id}, idx: {idx}"
                 )
@@ -362,12 +350,14 @@ async def message_generator(query_id: str, query: str):
                 print(
                     f"Message generator: image ready for query_id: {query_id}, idx: {idx}"
                 )
-                images.append(Image.open(IMG_DIR / f"{query_id}_{idx}.jpg"))
+                images[image_filename] = Image.open(image_filename)
         await asyncio.sleep(0.2)
+
+    images = list(images.values())
     # yield message with number of images ready
-    yield f"event: message\ndata: Generating response based on {len(images)} images.\n\n"
+    yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
     if not images:
-        yield "event: message\ndata: I am sorry, I do not have enough information in the image to answer your question.\n\n"
+        yield "event: message\ndata: Failed to send images to Gemini-8B!\n\n"
         yield "event: close\ndata: \n\n"
         return
 
@@ -388,9 +378,9 @@ async def message_generator(query_id: str, query: str):
 
 
 @app.get("/get-message")
-async def get_message(query_id: str, query: str):
+async def get_message(query_id: str, query: str, doc_ids: str):
     return StreamingResponse(
-        message_generator(query_id=query_id, query=query),
+        message_generator(query_id=query_id, query=query, doc_ids=doc_ids.split(",")),
         media_type="text/event-stream",
     )
 
