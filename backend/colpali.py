@@ -14,6 +14,8 @@ from colpali_engine.utils.torch_utils import get_torch_device
 from vidore_benchmark.interpretability.torch_utils import (
     normalize_similarity_map_per_query_token,
 )
+from functools import lru_cache
+import logging
 
 
 class SimMapGenerator:
@@ -21,10 +23,14 @@ class SimMapGenerator:
     Generates similarity maps based on query embeddings and image patches using the ColPali model.
     """
 
-    COLPALI_GEMMA_MODEL_NAME = "vidore/colpaligemma-3b-pt-448-base"
     colormap = cm.get_cmap("viridis")  # Preload colormap for efficiency
 
-    def __init__(self, model_name: str = "vidore/colpali-v1.2", n_patch: int = 32):
+    def __init__(
+        self,
+        logger: logging.Logger,
+        model_name: str = "vidore/colpali-v1.2",
+        n_patch: int = 32,
+    ):
         """
         Initializes the SimMapGenerator class with a specified model and patch dimension.
 
@@ -35,7 +41,8 @@ class SimMapGenerator:
         self.model_name = model_name
         self.n_patch = n_patch
         self.device = get_torch_device("auto")
-        print(f"Using device: {self.device}")
+        self.logger = logger
+        self.logger.info(f"Using device: {self.device}")
         self.model, self.processor = self.load_model()
 
     def load_model(self) -> Tuple[ColPali, ColPaliProcessor]:
@@ -47,7 +54,7 @@ class SimMapGenerator:
         """
         model = ColPali.from_pretrained(
             self.model_name,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            torch_dtype=torch.bfloat16,  # Note that the embeddings created during feed were float32 -> binarized, yet setting this seem to produce the most similar results both locally (mps) and HF (Cuda)
             device_map=self.device,
         ).eval()
 
@@ -250,7 +257,7 @@ class SimMapGenerator:
         )
         return bool(pattern.match(token))
 
-    # TODO: Would be nice to @lru_cache this method.
+    @lru_cache(maxsize=128)
     def get_query_embeddings_and_token_map(
         self, query: str
     ) -> Tuple[torch.Tensor, dict]:
