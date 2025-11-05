@@ -385,7 +385,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
     if not images:
-        yield "event: message\ndata: Failed to send images to Gemini 2.0!\n\n"
+        yield "event: message\ndata: Failed to send images to Gemini 2.5!\n\n"
         yield "event: close\ndata: \n\n"
         return
 

@@ -59,3 +59,4 @@ static/img/visual-retrieval-demoapp-arch.png filter=lfs diff=lfs merge=lfs -text
 static/full_images/d40134b18b684815719d4082b0643f0e.jpg filter=lfs diff=lfs merge=lfs -text
 static/full_images/02b30f947c2530e86fcc6f1617b284cb.jpg filter=lfs diff=lfs merge=lfs -text
 static/full_images/de672fe4f18da8c00f3035ce6ac1b7b6.jpg filter=lfs diff=lfs merge=lfs -text
+static/full_images/16bc7f7d90746144012cdc6799a9c9cf.jpg filter=lfs diff=lfs merge=lfs -text

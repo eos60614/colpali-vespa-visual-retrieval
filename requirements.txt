@@ -465,7 +465,7 @@ thinc==8.2.5
     # via spacy
 threadpoolctl==3.5.0
     # via scikit-learn
-tokenizers==0.21.4
+tokenizers==0.20.3
     # via transformers
 torch==2.8.0
     # via
@@ -486,8 +486,9 @@ tqdm==4.66.5
     #   sentence-transformers
     #   spacy
     #   transformers
-transformers==4.53.0
+transformers==4.45.0
     # via
+    #   visual-retrieval-colpali (pyproject.toml)
     #   colpali-engine
     #   peft
     #   sentence-transformers
