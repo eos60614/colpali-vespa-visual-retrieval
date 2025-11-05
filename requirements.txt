@@ -160,7 +160,7 @@ httplib2==0.22.0
     # via
     #   google-api-python-client
     #   google-auth-httplib2
-httptools==0.6.1
+httptools==0.7.1
     # via uvicorn
 httpx==0.27.2
     # via
@@ -521,8 +521,10 @@ urllib3==2.5.0
     # via
     #   docker
     #   requests
-uvicorn==0.31.0
-    # via python-fasthtml
+uvicorn==0.38.0
+    # via
+    #   visual-retrieval-colpali (pyproject.toml)
+    #   python-fasthtml
 uvloop==0.20.0
     # via uvicorn
 vespacli==8.391.23
