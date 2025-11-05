@@ -24,6 +24,7 @@ from fasthtml.common import (
     Script,
     StreamingResponse,
     fast_app,
+    serve,
 )
 from PIL import Image
 from shad4fast import ShadHead
@@ -42,7 +43,6 @@ from frontend.app import (
     SimMapButtonReady,
 )
 from frontend.layout import Layout
-import uvicorn
 
 highlight_js_theme_link = Link(id="highlight-theme", rel="stylesheet", href="")
 highlight_js_theme = Script(src="/static/js/highlightjs-theme.js")
@@ -68,11 +68,7 @@ awesomplete_link = Link(
 awesomplete_js = Script(
     src="https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.js"
 )
-sselink = Script(
-    src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4",
-    integrity="sha384-A986SAtodyH8eg8x8irJnYUk7i9inVQqYigD6qZ9evobksGNIXfeFvDwLSHcp31N",
-    crossorigin="anonymous",
-)
+sselink = Script(src="https://unpkg.com/htmx-ext-sse@2.2.1/sse.js")
 
 # Get log level from environment variable, default to INFO
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -116,7 +112,7 @@ This means that newlines will be replaced with <br> tags, bold text will be encl
 Do NOT include backticks (`) in your response. Only simple HTML tags and text.
 """
 gemini_model = genai.GenerativeModel(
-    "gemini-2.5-flash", system_instruction=GEMINI_SYSTEM_PROMPT
+    "gemini-2.0-flash", system_instruction=GEMINI_SYSTEM_PROMPT
 )
 STATIC_DIR = Path("static")
 IMG_DIR = STATIC_DIR / "full_images"
@@ -421,5 +417,4 @@ def get():
 if __name__ == "__main__":
     HOT_RELOAD = os.getenv("HOT_RELOAD", "False").lower() == "true"
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
-    uvicorn.run("main:app", host="0.0.0.0", timeout_worker_healthcheck=30, port=7860)
-    # serve(port=7860, reload=HOT_RELOAD)
+    serve(port=7860, reload=HOT_RELOAD)
