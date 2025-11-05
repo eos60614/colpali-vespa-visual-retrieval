@@ -24,7 +24,6 @@ from fasthtml.common import (
     Script,
     StreamingResponse,
     fast_app,
-    serve,
 )
 from PIL import Image
 from shad4fast import ShadHead
@@ -43,6 +42,7 @@ from frontend.app import (
     SimMapButtonReady,
 )
 from frontend.layout import Layout
+import uvicorn
 
 highlight_js_theme_link = Link(id="highlight-theme", rel="stylesheet", href="")
 highlight_js_theme = Script(src="/static/js/highlightjs-theme.js")
@@ -421,4 +421,5 @@ def get():
 if __name__ == "__main__":
     HOT_RELOAD = os.getenv("HOT_RELOAD", "False").lower() == "true"
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
-    serve(port=7860, reload=HOT_RELOAD)
+    uvicorn.run("main:app", host="0.0.0.0", timeout_worker_healthcheck=30, port=7860)
+    # serve(port=7860, reload=HOT_RELOAD)
