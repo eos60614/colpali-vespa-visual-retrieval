@@ -56,3 +56,4 @@ static/full_images/f7785696541fc185bc1d10c8608b8100.jpg filter=lfs diff=lfs merg
 static/img/colpali_child.png filter=lfs diff=lfs merge=lfs -text
 static/img/vespa-colpali.png filter=lfs diff=lfs merge=lfs -text
 static/img/visual-retrieval-demoapp-arch.png filter=lfs diff=lfs merge=lfs -text
+static/full_images/d40134b18b684815719d4082b0643f0e.jpg filter=lfs diff=lfs merge=lfs -text
