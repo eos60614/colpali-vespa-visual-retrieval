@@ -1,0 +1,20 @@
+services:
+  vespa:
+    image: vespaengine/vespa:8
+    container_name: vespa
+    hostname: vespa-container
+    ports:
+      - "8080:8080"      # Query/feed API
+      - "19071:19071"    # Config server
+    volumes:
+      - vespa-data:/opt/vespa/var
+      - ./vespa-app:/app
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:19071/state/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  vespa-data:

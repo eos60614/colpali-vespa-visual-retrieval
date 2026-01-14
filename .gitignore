@@ -1,0 +1,35 @@
+# Environment
+.env
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Logs
+*.log
+app.log
+
+# Runtime generated files
+static/full_images/
+static/sim_maps/
+
+# Local data
+sample_data/
+
+# Vespa data volume
+vespa-data/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

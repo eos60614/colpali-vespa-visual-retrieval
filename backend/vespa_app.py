@@ -20,11 +20,22 @@ class VespaQueryClient:
     def __init__(self, logger: logging.Logger):
         """
         Initialize the VespaQueryClient by loading environment variables and establishing a connection to the Vespa application.
+
+        Supports three connection modes:
+        1. Local: Set VESPA_LOCAL_URL (e.g., http://localhost:8080) - no auth required
+        2. mTLS: Set USE_MTLS=true with VESPA_APP_MTLS_URL, VESPA_CLOUD_MTLS_KEY, VESPA_CLOUD_MTLS_CERT
+        3. Token: Set VESPA_APP_TOKEN_URL and VESPA_CLOUD_SECRET_TOKEN
         """
         load_dotenv()
         self.logger = logger
 
-        if os.environ.get("USE_MTLS") == "true":
+        # Check for local Vespa connection first (no auth required)
+        local_url = os.environ.get("VESPA_LOCAL_URL")
+        if local_url:
+            self.logger.info("Connecting to local Vespa instance")
+            self.vespa_app_url = local_url
+            self.app = Vespa(url=self.vespa_app_url)
+        elif os.environ.get("USE_MTLS") == "true":
             self.logger.info("Connected using mTLS")
             mtls_key = os.environ.get("VESPA_CLOUD_MTLS_KEY")
             mtls_cert = os.environ.get("VESPA_CLOUD_MTLS_CERT")

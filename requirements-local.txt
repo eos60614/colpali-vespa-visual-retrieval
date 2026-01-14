@@ -1,0 +1,8 @@
+# Additional dependencies for local Vespa setup
+# Install with: pip install -r requirements-local.txt
+
+# For PDF processing (feed script)
+pymupdf>=1.24.0
+
+# For sample data generation
+reportlab>=4.0.0
