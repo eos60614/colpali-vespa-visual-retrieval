@@ -24,6 +24,9 @@ sample_data/
 # Vespa data volume
 vespa-data/
 
+# Checkpoint database
+data/*.db
+
 # IDE
 .idea/
 .vscode/

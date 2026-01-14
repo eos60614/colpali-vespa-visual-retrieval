@@ -1,0 +1,383 @@
+#!/usr/bin/env python3
+"""
+Database Sync Daemon CLI
+
+Continuous change detection and synchronization.
+"""
+
+import argparse
+import asyncio
+import logging
+import os
+import signal
+import sys
+from datetime import datetime
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from backend.ingestion.checkpoint import CheckpointStore
+from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
+from backend.ingestion.schema_discovery import SchemaDiscovery
+from backend.ingestion.sync_manager import SyncConfig, SyncManager
+
+
+def setup_logging(verbose: bool = False) -> logging.Logger:
+    """Configure logging."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s:\t%(asctime)s\t%(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    return logging.getLogger(__name__)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Database sync daemon for continuous synchronization.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Start sync daemon
+  python scripts/sync_database.py --daemon
+
+  # Run single sync cycle
+  python scripts/sync_database.py --once
+
+  # Check sync status
+  python scripts/sync_database.py --status
+
+  # Custom sync interval (5 minutes)
+  python scripts/sync_database.py --daemon --interval 300
+""",
+    )
+
+    parser.add_argument(
+        "--database-url",
+        type=str,
+        default=os.environ.get("PROCORE_DATABASE_URL"),
+        help="PostgreSQL connection string (default: $PROCORE_DATABASE_URL)",
+    )
+    parser.add_argument(
+        "--vespa-url",
+        type=str,
+        default=os.environ.get("VESPA_LOCAL_URL", "http://localhost:8080"),
+        help="Vespa endpoint URL (default: $VESPA_LOCAL_URL or localhost:8080)",
+    )
+
+    # Mode selection
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Run as continuous daemon",
+    )
+    mode_group.add_argument(
+        "--once",
+        action="store_true",
+        help="Run single sync cycle and exit",
+    )
+    mode_group.add_argument(
+        "--status",
+        action="store_true",
+        help="Show current sync status",
+    )
+
+    # Daemon options
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=300,
+        help="Sync interval in seconds for daemon mode (default: 300)",
+    )
+    parser.add_argument(
+        "--pid-file",
+        type=str,
+        default="/tmp/procore-sync.pid",
+        help="PID file for daemon (default: /tmp/procore-sync.pid)",
+    )
+
+    # Table selection
+    parser.add_argument(
+        "--tables",
+        type=str,
+        nargs="+",
+        default=None,
+        help="Specific tables to sync (default: all)",
+    )
+    parser.add_argument(
+        "--exclude",
+        type=str,
+        nargs="+",
+        default=[],
+        help="Tables to exclude from sync",
+    )
+
+    # Performance options
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1000,
+        help="Records per batch (default: 1000)",
+    )
+
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Verbose output",
+    )
+
+    return parser.parse_args()
+
+
+class SyncDaemon:
+    """Daemon for continuous database synchronization."""
+
+    def __init__(
+        self,
+        sync_manager: SyncManager,
+        sync_config: SyncConfig,
+        interval: int,
+        pid_file: Path,
+        logger: logging.Logger,
+    ):
+        self._sync_manager = sync_manager
+        self._sync_config = sync_config
+        self._interval = interval
+        self._pid_file = pid_file
+        self._logger = logger
+        self._running = False
+
+    async def start(self):
+        """Start the daemon."""
+        self._running = True
+
+        # Write PID file
+        self._pid_file.write_text(str(os.getpid()))
+        self._logger.info(f"Daemon started (PID: {os.getpid()})")
+
+        # Set up signal handlers
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._handle_shutdown)
+
+        try:
+            while self._running:
+                try:
+                    await self._run_sync_cycle()
+                except Exception as e:
+                    self._logger.error(f"Sync cycle failed: {e}")
+
+                if self._running:
+                    self._logger.info(f"Next sync in {self._interval} seconds")
+                    await asyncio.sleep(self._interval)
+
+        finally:
+            self._cleanup()
+
+    def _handle_shutdown(self):
+        """Handle shutdown signal."""
+        self._logger.info("Shutdown signal received")
+        self._running = False
+
+    def _cleanup(self):
+        """Clean up on shutdown."""
+        if self._pid_file.exists():
+            self._pid_file.unlink()
+        self._logger.info("Daemon stopped")
+
+    async def _run_sync_cycle(self):
+        """Run a single sync cycle."""
+        self._logger.info("Starting sync cycle...")
+        start_time = datetime.utcnow()
+
+        result = await self._sync_manager.run_incremental_sync(self._sync_config)
+
+        duration = datetime.utcnow() - start_time
+        self._logger.info(
+            f"Sync cycle completed: {result.records_processed} records "
+            f"in {duration.total_seconds():.1f}s"
+        )
+
+        return result
+
+
+async def print_status(
+    sync_manager: SyncManager,
+    logger: logging.Logger,
+):
+    """Print current sync status."""
+    status = await sync_manager.get_status()
+
+    print("\nSync Status Report")
+    print("=" * 60)
+    print(f"Tables monitored: {status['tables_monitored']}")
+    print(f"Total records: {status['total_records']:,}")
+    print(f"Total failed: {status['total_failed']:,}")
+
+    if status.get("current_job"):
+        print(f"Current job: {status['current_job']}")
+
+    print("\nTable Status:")
+    for table_name, table_status in sorted(status.get("tables", {}).items()):
+        sync_time = table_status.get("last_sync", "never")
+        records = table_status.get("records_processed", 0)
+        status_str = table_status.get("status", "unknown")
+        print(f"  {table_name:30} : {status_str:10} ({records:,} records, last: {sync_time})")
+
+    print("=" * 60)
+
+
+class MockVespaApp:
+    """Mock Vespa app when real one is not available."""
+
+    async def feed_data_point(self, schema: str, data_id: str, fields: dict):
+        pass
+
+    async def delete_data(self, schema: str, data_id: str):
+        pass
+
+
+async def main() -> int:
+    """Main entry point."""
+    args = parse_args()
+    logger = setup_logging(args.verbose)
+
+    # Validate database URL for daemon/once modes
+    if not args.status and not args.database_url:
+        logger.error(
+            "Database URL not provided. Set PROCORE_DATABASE_URL environment variable "
+            "or use --database-url argument."
+        )
+        return 1
+
+    try:
+        # Initialize checkpoint store (needed for all modes)
+        checkpoint_path = Path("data/sync_checkpoints.db")
+        checkpoint_store = CheckpointStore(checkpoint_path, logger)
+        await checkpoint_store.initialize()
+
+        if args.status:
+            # Status mode - just need checkpoint store
+            # Create minimal sync manager for status
+            if args.database_url:
+                config = ConnectionConfig.from_url(args.database_url)
+                db = DatabaseConnection(config, logger)
+                await db.connect()
+
+                try:
+                    discovery = SchemaDiscovery(db, logger)
+                    schema_map = await discovery.discover()
+
+                    vespa_app = MockVespaApp()
+                    sync_manager = SyncManager(
+                        db=db,
+                        vespa_app=vespa_app,
+                        schema_map=schema_map,
+                        checkpoint_store=checkpoint_store,
+                        logger=logger,
+                    )
+
+                    await print_status(sync_manager, logger)
+                finally:
+                    await db.close()
+            else:
+                # Just show checkpoint status without database
+                checkpoints = await checkpoint_store.get_all()
+                print("\nSync Status (from checkpoints)")
+                print("=" * 60)
+                for cp in checkpoints:
+                    print(f"  {cp.table_name:30} : {cp.sync_status:10} "
+                          f"(last: {cp.last_sync_timestamp})")
+                print("=" * 60)
+
+            return 0
+
+        # Connect to database
+        config = ConnectionConfig.from_url(args.database_url)
+        logger.info(f"Connecting to {config.database} at {config.host}...")
+
+        db = DatabaseConnection(config, logger)
+        await db.connect()
+
+        try:
+            # Discover schema
+            logger.info("Discovering database schema...")
+            discovery = SchemaDiscovery(db, logger)
+            schema_map = await discovery.discover()
+            logger.info(f"Schema loaded: {len(schema_map.tables)} tables")
+
+            # Set up Vespa client
+            try:
+                from backend.vespa_app import vespa_app
+            except ImportError:
+                logger.warning(
+                    "Could not import vespa_app, using mock client. "
+                    "Ensure Vespa is configured."
+                )
+                vespa_app = MockVespaApp()
+
+            # Create sync manager
+            sync_manager = SyncManager(
+                db=db,
+                vespa_app=vespa_app,
+                schema_map=schema_map,
+                checkpoint_store=checkpoint_store,
+                logger=logger,
+            )
+
+            # Build sync config
+            sync_config = SyncConfig(
+                tables=args.tables,
+                exclude_tables=args.exclude,
+                batch_size=args.batch_size,
+            )
+
+            if args.daemon:
+                # Run daemon
+                daemon = SyncDaemon(
+                    sync_manager=sync_manager,
+                    sync_config=sync_config,
+                    interval=args.interval,
+                    pid_file=Path(args.pid_file),
+                    logger=logger,
+                )
+                await daemon.start()
+                return 0
+
+            elif args.once:
+                # Run single sync cycle
+                result = await sync_manager.run_incremental_sync(sync_config)
+
+                logger.info("=" * 60)
+                logger.info(f"Sync completed: {result.status}")
+                logger.info(f"Records processed: {result.records_processed:,}")
+                logger.info(f"Records failed: {result.records_failed:,}")
+                logger.info("=" * 60)
+
+                if result.errors:
+                    for error in result.errors[:5]:
+                        logger.warning(f"  {error}")
+
+                return 0 if result.status == "COMPLETED" else 1
+
+        finally:
+            await db.close()
+
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        return 1
+    except Exception as e:
+        logger.error(f"Sync failed: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(asyncio.run(main()))
