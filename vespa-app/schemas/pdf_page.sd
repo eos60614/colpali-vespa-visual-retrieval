@@ -54,6 +54,15 @@ schema pdf_page {
             indexing: summary | index
             match: text
         }
+        field description type string {
+            indexing: summary | index
+            match: text
+        }
+        field tags type array<string> {
+            indexing: summary | index
+            match: text
+            index: enable-bm25
+        }
     }
 
     fieldset default {
@@ -224,7 +233,7 @@ schema pdf_page {
             expression: max_sim_binary
         }
         second-phase {
-            expression: max_sim + 2 * (bm25(text) + bm25(title))
+            expression: max_sim + 2 * (bm25(text) + bm25(title) + bm25(tags))
             rerank-count: 10
         }
     }

@@ -23,6 +23,7 @@ from fasthtml.common import (
     RedirectResponse,
     Script,
     StreamingResponse,
+    UploadFile,
     fast_app,
 )
 from PIL import Image
@@ -31,6 +32,7 @@ from vespa.application import Vespa
 
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
+from backend.ingest import ingest_pdf, validate_pdf
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -40,6 +42,10 @@ from frontend.app import (
     SearchResult,
     SimMapButtonPoll,
     SimMapButtonReady,
+    UploadPage,
+    UploadSidebar,
+    UploadSuccess,
+    UploadError,
 )
 from frontend.layout import Layout
 import uvicorn
@@ -157,6 +163,112 @@ def get(session):
 @rt("/about-this-demo")
 def get():
     return Layout(Main(AboutThisDemo()))
+
+
+# Maximum file size: 250MB
+MAX_FILE_SIZE = 250 * 1024 * 1024
+
+
+@rt("/upload")
+def get():
+    """Render the upload page."""
+    return Layout(
+        Main(UploadPage(), cls="border-t"),
+        Aside(
+            UploadSidebar(),
+            cls="border-t border-l hidden md:block",
+        ),
+    )
+
+
+@rt("/upload")
+async def post(
+    pdf_file: UploadFile,
+    title: str = "",
+    description: str = "",
+    tags: str = "",
+):
+    """Handle PDF file upload and ingestion."""
+    # Check if file was provided
+    if pdf_file is None or pdf_file.filename == "":
+        logger.warning("Upload attempted without file")
+        return UploadError("Please select a PDF file")
+
+    # Read file content
+    try:
+        file_bytes = await pdf_file.read()
+    except Exception as e:
+        logger.error(f"Error reading uploaded file: {e}")
+        return UploadError("Error reading uploaded file")
+
+    # Validate file size
+    if len(file_bytes) > MAX_FILE_SIZE:
+        logger.warning(f"File too large: {len(file_bytes)} bytes")
+        return UploadError("File exceeds 250MB size limit")
+
+    # Validate file is a PDF
+    if not pdf_file.filename.lower().endswith(".pdf"):
+        return UploadError("Only PDF files are accepted")
+
+    # Validate PDF integrity
+    is_valid, validation_msg = validate_pdf(file_bytes)
+    if not is_valid:
+        logger.warning(f"PDF validation failed: {validation_msg}")
+        return UploadError(validation_msg)
+
+    # Parse tags
+    tag_list = []
+    if tags.strip():
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        # Validate tag count
+        if len(tag_list) > 20:
+            return UploadError("Maximum 20 tags allowed")
+        # Validate individual tag length
+        for tag in tag_list:
+            if len(tag) > 50:
+                return UploadError("Each tag must be 50 characters or less")
+
+    # Validate title length
+    if len(title) > 200:
+        return UploadError("Title must be 200 characters or less")
+
+    # Validate description length
+    if len(description) > 1000:
+        return UploadError("Description must be 1000 characters or less")
+
+    # Get the ColPali model from the app
+    sim_map_gen = app.sim_map_generator
+    model = sim_map_gen.model
+    processor = sim_map_gen.processor
+    device = sim_map_gen.device
+
+    # Get Vespa app
+    vespa = vespa_app.app
+
+    # Process the PDF
+    try:
+        success, message, pages_indexed = ingest_pdf(
+            file_bytes=file_bytes,
+            filename=pdf_file.filename,
+            vespa_app=vespa,
+            model=model,
+            processor=processor,
+            device=device,
+            title=title if title.strip() else None,
+            description=description,
+            tags=tag_list,
+        )
+    except Exception as e:
+        logger.error(f"Error processing PDF: {e}")
+        return UploadError(f"Error processing document: {str(e)}")
+
+    if success:
+        final_title = title.strip() if title.strip() else Path(pdf_file.filename).stem
+        logger.info(f"Successfully uploaded: {final_title} ({pages_indexed} pages)")
+        return UploadSuccess(title=final_title, pages_indexed=pages_indexed)
+    else:
+        logger.error(f"Upload failed: {message}")
+        return UploadError(message)
 
 
 @rt("/search")
