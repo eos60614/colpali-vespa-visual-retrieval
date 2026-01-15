@@ -228,3 +228,199 @@ ColPali's strength with PDFs:
 **Don't extract text → compare text.** Instead: **extract requirements → visually locate in submittal → visually verify match.**
 
 This keeps the PDF visual fidelity throughout the pipeline.
+
+---
+
+## Design Philosophy: Human-Assisted, Not Human-Replaced
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  CORE PRINCIPLE                                             │
+│  ─────────────────                                          │
+│  • System does the grunt work (finding, extracting)         │
+│  • Human makes the judgment calls                           │
+│  • Human always understands what happened and why           │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Constraints
+
+| Constraint | Implication |
+|------------|-------------|
+| **1 submittal ↔ 1 spec section** | No cross-section matching. System suggests section, human confirms. |
+| **System suggests, human verifies** | Spec section picker with override, not auto-assignment |
+| **Feedback loop required** | Human corrections improve future extractions |
+| **Transparency over automation** | Human must understand the reasoning, not just see pass/fail |
+
+### What This Means for UX
+
+```
+OLD: Submittal → [BLACK BOX] → Pass/Fail
+NEW: Submittal → [System finds evidence] → Human sees evidence → Human decides
+```
+
+The system's job is to **accelerate human review**, not replace it.
+
+---
+
+## 3-Lane Requirement Triage
+
+At Step 1 (Requirement Extraction), every requirement gets classified into one of three lanes:
+
+### Lane 1: Auto-Checkable (Green)
+Typed, unambiguous, directly comparable requirements.
+
+**Examples:**
+- Voltage/phase/frequency
+- Listing requirements (UL, ETL, etc.)
+- Leakage class
+- Material/coating specifications
+- Maximum sound levels
+- Minimum efficiency ratings
+
+**Action:** System extracts, retrieves from submittal, shows comparison to human.
+
+### Lane 2: Needs Scoping (Yellow)
+Requirements that reference drawings, schedules, or external documents.
+
+**Trigger phrases:**
+- "as scheduled"
+- "as indicated"
+- "per plans"
+- "where shown"
+- "match drawings"
+- "coordinate with"
+
+**Action:** Creates a requirement stub with `status = NEEDS_SCOPING`. Human must provide the target value or mark as N/A. No auto-checking until scoped.
+
+### Lane 3: Informational (Gray)
+Narrative, workmanship, means & methods, "provide as required."
+
+**Examples:**
+- Installation instructions
+- Workmanship standards
+- Coordination requirements
+- "As required by code"
+
+**Action:** Stored for reference, displayed to human, but not checked.
+
+### Why Triage Matters
+
+This is the **single biggest lever for accuracy**. If an ambiguous requirement gets auto-checked, you get false passes. The triage ensures:
+- Only clear requirements get automated checks
+- Ambiguous requirements get human input first
+- Informational content doesn't clutter the review
+
+---
+
+## Feedback Loop Design
+
+Human corrections flow back to improve the system over time.
+
+### Correction Types
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  WHAT HUMANS CAN CORRECT                                     │
+├──────────────────────────────────────────────────────────────┤
+│  1. Spec section override    → Improves section matching     │
+│  2. Requirement edit         → Improves extraction prompts   │
+│  3. Value correction         → Improves LLM extraction       │
+│  4. Pass/Fail override       → Improves comparison logic     │
+│  5. "Not applicable" flag    → Improves requirement filtering│
+│  6. Lane reclassification    → Improves triage accuracy      │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Feedback Flow
+
+```
+Human makes correction
+        ↓
+Correction stored with full context:
+  - Original system output
+  - Human correction
+  - Document refs (spec page, submittal page)
+  - Timestamp, user ID
+        ↓
+Periodic analysis of corrections:
+  - Common extraction errors → prompt tuning
+  - Common triage errors → classifier updates
+  - Common section mismatches → embedding improvements
+        ↓
+System accuracy improves over time
+```
+
+### Design Principle
+
+Every correction should be **low-friction** for the human:
+- Single click to override pass/fail
+- Inline editing for value corrections
+- Dropdown for lane reclassification
+
+The system should make it **easier to correct than to ignore**.
+
+---
+
+## MVP Pipeline (Revised)
+
+### Step 0: Spec Section Matching
+- System suggests which spec section applies to the submittal
+- Human verifies or overrides
+- **Only proceeds with confirmed spec section**
+
+### Step 1: Requirement Extraction
+- Extract requirements from the **single confirmed spec section**
+- Classify each into Green/Yellow/Gray lane
+- Output structured JSON with source refs
+
+### Step 2: Per-Requirement Retrieval (Green Lane Only)
+- For each AUTO_CHECK requirement:
+  - Query ColPali against the submittal
+  - Return top-k regions with similarity scores
+  - Show human where evidence was found
+
+### Step 3: Visual Verification
+- For each requirement + candidate region:
+  - Vision LLM extracts value from submittal
+  - Compares against requirement
+  - Returns: value found, comparison result, confidence, evidence refs
+
+### Step 4: Human Review
+- Present all findings to human with full evidence
+- Human can:
+  - Confirm system findings
+  - Override any result
+  - Scope yellow-lane requirements
+  - Mark items as N/A
+- All actions logged for feedback loop
+
+---
+
+## Risks and Mitigations
+
+| Risk | Mitigation |
+|------|------------|
+| Yellow lane overload (too many NEEDS_SCOPING) | Add "suggested scoping hints" without auto-checking |
+| Vendor cutsheet variability | Top-k retrieval + multi-region display to human |
+| Spec language diversity | Typed taxonomy + continuous tuning from feedback |
+| LLM hallucination on values | Always show source evidence; human verifies |
+| Confidence threshold tuning | Start conservative; use feedback data to calibrate |
+
+---
+
+## Open Questions
+
+1. **Scoper workflow:** When a requirement is NEEDS_SCOPING, what's the minimal action? Options:
+   - Pick a drawing sheet
+   - Pick a schedule row
+   - Enter target value manually (recommended for MVP)
+   - Mark as N/A
+
+2. **Feedback cadence:** How often should corrections be analyzed and incorporated?
+   - Real-time learning (complex)
+   - Weekly batch analysis (simpler, recommended for MVP)
+
+3. **Multi-model submittals:** When a cutsheet has multiple product models, how to handle?
+   - Human selects which model applies
+   - System attempts to match model number from spec
