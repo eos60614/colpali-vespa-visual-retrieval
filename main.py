@@ -31,6 +31,8 @@ from vespa.application import Vespa
 
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
+from backend.models import init_db
+from backend.compliance.routes import register_compliance_routes
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -129,6 +131,17 @@ os.makedirs(SIM_MAP_DIR, exist_ok=True)
 def load_model_on_startup():
     app.sim_map_generator = SimMapGenerator(logger=logger)
     return
+
+
+@app.on_event("startup")
+def init_compliance_db():
+    init_db()
+    logger.info("Compliance database initialized")
+    return
+
+
+# Register compliance API routes
+register_compliance_routes(app, rt)
 
 
 @app.on_event("startup")

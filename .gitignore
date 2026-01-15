@@ -20,6 +20,10 @@ static/sim_maps/
 
 # Local data
 sample_data/
+data/
+
+# Compliance evidence cache
+static/compliance/evidence/
 
 # Vespa data volume
 vespa-data/

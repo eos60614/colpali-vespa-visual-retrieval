@@ -1,0 +1,90 @@
+schema spec_section {
+    document spec_section {
+        field id type string {
+            indexing: summary | attribute
+        }
+        field project_id type string {
+            indexing: summary | attribute
+        }
+        field section_number type string {
+            indexing: summary | index
+            index: enable-bm25
+        }
+        field section_title type string {
+            indexing: summary | index
+            index: enable-bm25
+        }
+        field source_doc_id type string {
+            indexing: summary | attribute
+        }
+        field page_numbers type array<int> {
+            indexing: summary | attribute
+        }
+        field text type string {
+            indexing: summary | index
+            index: enable-bm25
+        }
+        field embedding type tensor<int8>(patch{}, v[16]) {
+            indexing: attribute | index
+            attribute {
+                distance-metric: hamming
+            }
+            index {
+                hnsw {
+                    max-links-per-node: 32
+                    neighbors-to-explore-at-insert: 400
+                }
+            }
+        }
+    }
+
+    fieldset default {
+        fields: section_number, section_title, text
+    }
+
+    rank-profile bm25 inherits default {
+        first-phase {
+            expression: bm25(section_number) + bm25(section_title) + bm25(text)
+        }
+    }
+
+    rank-profile colpali inherits default {
+        inputs {
+            query(qt) tensor<float>(querytoken{}, v[128])
+            query(qtb) tensor<int8>(querytoken{}, v[16])
+        }
+        function max_sim_binary() {
+            expression {
+                sum(
+                    reduce(
+                        1 / (1 + sum(
+                            hamming(query(qtb), attribute(embedding)), v
+                        )),
+                        max, patch
+                    ),
+                    querytoken
+                )
+            }
+        }
+        function max_sim() {
+            expression {
+                sum(
+                    reduce(
+                        sum(
+                            query(qt) * unpack_bits(attribute(embedding)), v
+                        ),
+                        max, patch
+                    ),
+                    querytoken
+                )
+            }
+        }
+        first-phase {
+            expression: max_sim_binary
+        }
+        second-phase {
+            expression: max_sim
+            rerank-count: 10
+        }
+    }
+}

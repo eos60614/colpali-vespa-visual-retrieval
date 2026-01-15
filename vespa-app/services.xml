@@ -19,6 +19,7 @@
         <redundancy>1</redundancy>
         <documents>
             <document type="pdf_page" mode="index"/>
+            <document type="spec_section" mode="index"/>
         </documents>
         <engine>
             <proton>
