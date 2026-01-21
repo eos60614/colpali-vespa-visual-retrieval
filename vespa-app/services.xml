@@ -19,6 +19,8 @@
         <redundancy>1</redundancy>
         <documents>
             <document type="pdf_page" mode="index"/>
+            <document type="procore_record" mode="index"/>
+            <document type="procore_schema_metadata" mode="index"/>
         </documents>
         <engine>
             <proton>
@@ -32,6 +34,10 @@
                         </requestthreads>
                     </searchnode>
                 </tuning>
+                <resource-limits>
+                    <disk>0.85</disk>
+                    <memory>0.90</memory>
+                </resource-limits>
             </proton>
         </engine>
         <config name="vespa.config.search.summary.juniperrc">

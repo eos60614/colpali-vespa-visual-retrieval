@@ -1,0 +1,90 @@
+schema procore_record {
+    document procore_record {
+        field doc_id type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field source_table type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field source_id type string {
+            indexing: summary | attribute
+        }
+        field project_id type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field metadata type map<string, string> {
+            indexing: summary
+            struct-field key {
+                indexing: attribute
+            }
+            struct-field value {
+                indexing: attribute
+            }
+        }
+        # Outgoing relationships with full navigation context
+        # Each JSON object contains: target_doc_id, target_table, target_id,
+        # source_column, relationship_type, direction, cardinality
+        field relationships type array<string> {
+            indexing: summary | attribute
+        }
+        # File references with complete provenance
+        # Each JSON object contains: s3_key, source_column, reference_type,
+        # filename, file_id (optional), url (optional)
+        field file_references type array<string> {
+            indexing: summary | attribute
+        }
+        # Incoming relationship hints for reverse navigation
+        # Each JSON object contains: source_table, source_column,
+        # relationship_type, cardinality, query_hint
+        field incoming_relationships type array<string> {
+            indexing: summary | attribute
+        }
+        field created_at type long {
+            indexing: summary | attribute
+        }
+        field updated_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field ingested_at type long {
+            indexing: summary | attribute
+        }
+        field content_text type string {
+            indexing: summary | index
+            index: enable-bm25
+            match: text
+        }
+        # Schema documentation fields for agent reference
+        field table_description type string {
+            indexing: summary | attribute
+        }
+        field column_types type map<string, string> {
+            indexing: summary
+        }
+    }
+
+    fieldset default {
+        fields: content_text
+    }
+
+    rank-profile default {
+        first-phase {
+            expression: bm25(content_text)
+        }
+    }
+
+    rank-profile bm25 inherits default {
+        first-phase {
+            expression: bm25(content_text)
+        }
+    }
+
+    rank-profile freshness inherits default {
+        first-phase {
+            expression: bm25(content_text) + freshness(updated_at)
+        }
+    }
+}

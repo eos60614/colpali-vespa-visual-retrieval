@@ -1,0 +1,101 @@
+schema procore_schema_metadata {
+    document procore_schema_metadata {
+        # Unique identifier for the schema metadata document
+        # Format: "schema:<database_name>" for full schema
+        # or "table:<table_name>" for individual table metadata
+        field doc_id type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        # Type of metadata: "full_schema" or "table"
+        field metadata_type type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        # Database name this metadata describes
+        field database_name type string {
+            indexing: summary | attribute
+        }
+
+        # Table name (only for table metadata documents)
+        field table_name type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        # Human-readable description of the table
+        field table_description type string {
+            indexing: summary | index
+            index: enable-bm25
+        }
+
+        # Number of rows in the table
+        field row_count type long {
+            indexing: summary | attribute
+        }
+
+        # Column definitions as JSON array
+        # Each object: {name, data_type, is_nullable, default_value}
+        field columns type array<string> {
+            indexing: summary | attribute
+        }
+
+        # Timestamp columns available for change detection
+        field timestamp_columns type array<string> {
+            indexing: summary | attribute
+        }
+
+        # File reference columns with type information
+        # Each object: {column_name, reference_type, pattern}
+        field file_reference_columns type array<string> {
+            indexing: summary | attribute
+        }
+
+        # Outgoing relationships from this table
+        # Each object: {target_table, source_column, relationship_type, cardinality}
+        field outgoing_relationships type array<string> {
+            indexing: summary | attribute
+        }
+
+        # Incoming relationships to this table
+        # Each object: {source_table, source_column, relationship_type, cardinality}
+        field incoming_relationships type array<string> {
+            indexing: summary | attribute
+        }
+
+        # Primary key columns
+        field primary_key type array<string> {
+            indexing: summary | attribute
+        }
+
+        # Discovery timestamp
+        field discovery_timestamp type string {
+            indexing: summary | attribute
+        }
+
+        # Full schema summary (only for full_schema type)
+        # Contains table count, relationship count, file ref summary
+        field schema_summary type string {
+            indexing: summary
+        }
+
+        # Searchable content for finding tables by description/column names
+        field content_text type string {
+            indexing: summary | index
+            index: enable-bm25
+            match: text
+        }
+    }
+
+    fieldset default {
+        fields: content_text, table_description
+    }
+
+    rank-profile default {
+        first-phase {
+            expression: bm25(content_text) + bm25(table_description)
+        }
+    }
+}
