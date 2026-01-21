@@ -9,7 +9,7 @@ import re
 import io
 import matplotlib.cm as cm
 
-from colpali_engine.models import ColPali, ColPaliProcessor
+from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
 from colpali_engine.utils.torch_utils import get_torch_device
 from vidore_benchmark.interpretability.torch_utils import (
     normalize_similarity_map_per_query_token,
@@ -20,7 +20,7 @@ import logging
 
 class SimMapGenerator:
     """
-    Generates similarity maps based on query embeddings and image patches using the ColPali model.
+    Generates similarity maps based on query embeddings and image patches using the ColQwen2.5 model.
     """
 
     colormap = cm.get_cmap("viridis")  # Preload colormap for efficiency
@@ -28,14 +28,14 @@ class SimMapGenerator:
     def __init__(
         self,
         logger: logging.Logger,
-        model_name: str = "vidore/colpali-v1.2",
+        model_name: str = "tsystems/colqwen2.5-3b-multilingual-v1.0",
         n_patch: int = 32,
     ):
         """
         Initializes the SimMapGenerator class with a specified model and patch dimension.
 
         Args:
-            model_name (str): The model name for loading the ColPali model.
+            model_name (str): The model name for loading the ColQwen2.5 model.
             n_patch (int): The number of patches per dimension.
         """
         self.model_name = model_name
@@ -45,20 +45,23 @@ class SimMapGenerator:
         self.logger.info(f"Using device: {self.device}")
         self.model, self.processor = self.load_model()
 
-    def load_model(self) -> Tuple[ColPali, ColPaliProcessor]:
+    def load_model(self) -> Tuple[ColQwen2_5, ColQwen2_5_Processor]:
         """
-        Loads the ColPali model and processor.
+        Loads the ColQwen2.5 model and processor.
 
         Returns:
-            Tuple[ColPali, ColPaliProcessor]: Loaded model and processor.
+            Tuple[ColQwen2_5, ColQwen2_5_Processor]: Loaded model and processor.
         """
-        model = ColPali.from_pretrained(
+        self.logger.info(f"Loading ColQwen2.5 model: {self.model_name}")
+
+        processor = ColQwen2_5_Processor.from_pretrained(self.model_name)
+
+        model = ColQwen2_5.from_pretrained(
             self.model_name,
-            torch_dtype=torch.bfloat16,  # Note that the embeddings created during feed were float32 -> binarized, yet setting this seem to produce the most similar results both locally (mps) and HF (Cuda)
+            torch_dtype=torch.bfloat16,
             device_map=self.device,
         ).eval()
 
-        processor = ColPaliProcessor.from_pretrained(self.model_name)
         return model, processor
 
     def gen_similarity_maps(
@@ -274,8 +277,6 @@ class SimMapGenerator:
         with torch.no_grad():
             q_emb = self.model(**inputs).to("cpu")[0]
 
-        query_tokens = self.processor.tokenizer.tokenize(
-            self.processor.decode(inputs.input_ids[0])
-        )
+        query_tokens = self.processor.tokenizer.tokenize(query)
         idx_to_token = {idx: token for idx, token in enumerate(query_tokens)}
         return q_emb, idx_to_token

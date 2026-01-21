@@ -131,6 +131,10 @@ def ThemeToggle(variant="ghost", cls=None, **kwargs):
 def Links():
     return Nav(
         A(
+            Button("Upload", variant="link"),
+            href="/upload",
+        ),
+        A(
             Button("About this demo?", variant="link"),
             href="/about-this-demo",
         ),

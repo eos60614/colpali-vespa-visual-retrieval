@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backend.ingestion.pdf_processor import PDFProcessor
 
 from backend.ingestion.change_detector import ChangeDetector
 from backend.ingestion.checkpoint import Checkpoint, CheckpointStore
@@ -39,6 +42,9 @@ class IngestionJob:
         "files_total": 0,
         "files_downloaded": 0,
         "files_failed": 0,
+        "pdfs_processed": 0,
+        "pdfs_failed": 0,
+        "pdf_pages_indexed": 0,
     })
     errors: list = field(default_factory=list)
 
@@ -53,6 +59,7 @@ class SyncConfig:
     download_files: bool = False
     file_workers: int = 2
     download_dir: Optional[Path] = None
+    process_pdfs: bool = False  # Process downloaded PDFs with ColPali
 
 
 @dataclass
@@ -68,7 +75,10 @@ class SyncResult:
     records_failed: int
     files_downloaded: int
     files_failed: int
-    errors: list[str]
+    pdfs_processed: int = 0
+    pdfs_failed: int = 0
+    pdf_pages_indexed: int = 0
+    errors: list[str] = field(default_factory=list)
 
 
 class SyncManager:
@@ -88,6 +98,7 @@ class SyncManager:
         schema_map: SchemaMap,
         checkpoint_store: CheckpointStore,
         logger: Optional[logging.Logger] = None,
+        pdf_processor: Optional["PDFProcessor"] = None,
     ):
         """Initialize sync manager.
 
@@ -97,12 +108,14 @@ class SyncManager:
             schema_map: Schema map from discovery
             checkpoint_store: Checkpoint persistence store
             logger: Optional logger instance
+            pdf_processor: Optional PDF processor for ColPali indexing
         """
         self._db = db
         self._vespa = vespa_app
         self._schema_map = schema_map
         self._checkpoint_store = checkpoint_store
         self._logger = logger or logging.getLogger(__name__)
+        self._pdf_processor = pdf_processor
         self._current_job: Optional[IngestionJob] = None
 
     def get_tables_to_sync(self, config: SyncConfig) -> list[str]:
@@ -171,6 +184,9 @@ class SyncManager:
         tables_completed = 0
         files_downloaded = 0
         files_failed = 0
+        pdfs_processed = 0
+        pdfs_failed = 0
+        pdf_pages_indexed = 0
 
         try:
             # Create record ingester
@@ -187,12 +203,23 @@ class SyncManager:
             if config.download_files:
                 file_detector = FileDetector(self._schema_map, self._logger)
                 download_dir = config.download_dir or Path("data/downloads")
+                # Use DIRECT_S3 strategy with AWS credentials from environment
+                import os
+                aws_config = {
+                    "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
+                    "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                    "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
+                    "S3_BUCKET": os.environ.get("S3_BUCKET", "procore-integration-files"),
+                }
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
-                    strategy=DownloadStrategy.PROCORE_URL,
+                    strategy=DownloadStrategy.DIRECT_S3,
                     logger=self._logger,
+                    aws_config=aws_config,
                 )
                 self._logger.info(f"File download enabled, saving to {download_dir}")
+                if config.process_pdfs and self._pdf_processor:
+                    self._logger.info("PDF processing enabled with ColPali")
 
             for table in tables:
                 self._logger.info(f"Syncing table: {table}")
@@ -201,6 +228,9 @@ class SyncManager:
                 table_failed = 0
                 table_files_downloaded = 0
                 table_files_failed = 0
+                table_pdfs_processed = 0
+                table_pdfs_failed = 0
+                table_pdf_pages = 0
 
                 try:
                     async for result in ingester.ingest_table(
@@ -220,17 +250,24 @@ class SyncManager:
 
                     # Download files if enabled
                     if config.download_files and file_detector and file_downloader:
-                        dl_count, dl_failed = await self._download_files_for_table(
+                        dl_count, dl_failed, pdf_count, pdf_fail, pdf_pages = await self._download_files_for_table(
                             table=table,
                             file_detector=file_detector,
                             file_downloader=file_downloader,
                             batch_size=config.batch_size,
                             workers=config.file_workers,
+                            process_pdfs=config.process_pdfs and self._pdf_processor is not None,
                         )
                         table_files_downloaded = dl_count
                         table_files_failed = dl_failed
+                        table_pdfs_processed = pdf_count
+                        table_pdfs_failed = pdf_fail
+                        table_pdf_pages = pdf_pages
                         files_downloaded += dl_count
                         files_failed += dl_failed
+                        pdfs_processed += pdf_count
+                        pdfs_failed += pdf_fail
+                        pdf_pages_indexed += pdf_pages
 
                     # Save checkpoint after table completion
                     await self._save_checkpoint(
@@ -246,12 +283,17 @@ class SyncManager:
                     job.progress["records_failed"] = records_failed
                     job.progress["files_downloaded"] = files_downloaded
                     job.progress["files_failed"] = files_failed
+                    job.progress["pdfs_processed"] = pdfs_processed
+                    job.progress["pdfs_failed"] = pdfs_failed
+                    job.progress["pdf_pages_indexed"] = pdf_pages_indexed
 
-                    self._logger.info(
-                        f"Completed {table}: {table_processed} records "
-                        f"({table_failed} failed)"
-                        + (f", {table_files_downloaded} files" if config.download_files else "")
-                    )
+                    # Build completion message
+                    msg = f"Completed {table}: {table_processed} records ({table_failed} failed)"
+                    if config.download_files:
+                        msg += f", {table_files_downloaded} files"
+                    if table_pdfs_processed > 0 or table_pdfs_failed > 0:
+                        msg += f", {table_pdfs_processed} PDFs ({table_pdf_pages} pages)"
+                    self._logger.info(msg)
 
                 except Exception as e:
                     self._logger.error(f"Failed to sync table {table}: {e}")
@@ -286,6 +328,9 @@ class SyncManager:
             records_failed=records_failed,
             files_downloaded=files_downloaded,
             files_failed=files_failed,
+            pdfs_processed=pdfs_processed,
+            pdfs_failed=pdfs_failed,
+            pdf_pages_indexed=pdf_pages_indexed,
             errors=job.errors,
         )
 
@@ -321,6 +366,9 @@ class SyncManager:
         tables_completed = 0
         files_downloaded = 0
         files_failed = 0
+        pdfs_processed = 0
+        pdfs_failed = 0
+        pdf_pages_indexed = 0
 
         try:
             ingester = RecordIngester(
@@ -343,11 +391,22 @@ class SyncManager:
             if config.download_files:
                 file_detector = FileDetector(self._schema_map, self._logger)
                 download_dir = config.download_dir or Path("data/downloads")
+                # Use DIRECT_S3 strategy with AWS credentials from environment
+                import os
+                aws_config = {
+                    "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
+                    "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                    "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
+                    "S3_BUCKET": os.environ.get("S3_BUCKET", "procore-integration-files"),
+                }
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
-                    strategy=DownloadStrategy.PROCORE_URL,
+                    strategy=DownloadStrategy.DIRECT_S3,
                     logger=self._logger,
+                    aws_config=aws_config,
                 )
+                if config.process_pdfs and self._pdf_processor:
+                    self._logger.info("PDF processing enabled with ColPali")
 
             for table in tables:
                 # Get last sync time for this table
@@ -361,6 +420,9 @@ class SyncManager:
                 table_processed = 0
                 table_failed = 0
                 table_deleted = 0
+                table_pdfs_processed = 0
+                table_pdfs_failed = 0
+                table_pdf_pages = 0
 
                 try:
                     # Process updates and inserts
@@ -382,16 +444,23 @@ class SyncManager:
 
                     # Download files for updated records if enabled
                     if config.download_files and file_detector and file_downloader:
-                        dl_count, dl_failed = await self._download_files_for_table(
+                        dl_count, dl_failed, pdf_count, pdf_fail, pdf_pages = await self._download_files_for_table(
                             table=table,
                             file_detector=file_detector,
                             file_downloader=file_downloader,
                             batch_size=config.batch_size,
                             workers=config.file_workers,
                             since=last_sync,
+                            process_pdfs=config.process_pdfs and self._pdf_processor is not None,
                         )
                         files_downloaded += dl_count
                         files_failed += dl_failed
+                        table_pdfs_processed = pdf_count
+                        table_pdfs_failed = pdf_fail
+                        table_pdf_pages = pdf_pages
+                        pdfs_processed += pdf_count
+                        pdfs_failed += pdf_fail
+                        pdf_pages_indexed += pdf_pages
 
                     await self._save_checkpoint(
                         table=table,
@@ -406,12 +475,17 @@ class SyncManager:
                     job.progress["records_failed"] = records_failed
                     job.progress["files_downloaded"] = files_downloaded
                     job.progress["files_failed"] = files_failed
+                    job.progress["pdfs_processed"] = pdfs_processed
+                    job.progress["pdfs_failed"] = pdfs_failed
+                    job.progress["pdf_pages_indexed"] = pdf_pages_indexed
 
-                    if table_processed > 0 or table_deleted > 0:
-                        self._logger.info(
-                            f"Completed {table}: {table_processed} changes"
-                            + (f", {table_deleted} deleted" if table_deleted > 0 else "")
-                        )
+                    if table_processed > 0 or table_deleted > 0 or table_pdfs_processed > 0:
+                        msg = f"Completed {table}: {table_processed} changes"
+                        if table_deleted > 0:
+                            msg += f", {table_deleted} deleted"
+                        if table_pdfs_processed > 0 or table_pdfs_failed > 0:
+                            msg += f", {table_pdfs_processed} PDFs ({table_pdf_pages} pages)"
+                        self._logger.info(msg)
 
                 except Exception as e:
                     self._logger.error(f"Failed to sync table {table}: {e}")
@@ -446,6 +520,9 @@ class SyncManager:
             records_failed=records_failed,
             files_downloaded=files_downloaded,
             files_failed=files_failed,
+            pdfs_processed=pdfs_processed,
+            pdfs_failed=pdfs_failed,
+            pdf_pages_indexed=pdf_pages_indexed,
             errors=job.errors,
         )
 
@@ -508,6 +585,7 @@ class SyncManager:
                 batch_size=config.batch_size,
                 workers=config.file_workers,
                 since=since,
+                process_pdfs=config.process_pdfs and self._pdf_processor is not None,
             )
 
         await self._save_checkpoint(
@@ -615,8 +693,9 @@ class SyncManager:
         batch_size: int = 1000,
         workers: int = 2,
         since: Optional[datetime] = None,
-    ) -> tuple[int, int]:
-        """Download files referenced in a table.
+        process_pdfs: bool = False,
+    ) -> tuple[int, int, int, int, int]:
+        """Download files referenced in a table and optionally process PDFs.
 
         Args:
             table: Table name
@@ -625,12 +704,16 @@ class SyncManager:
             batch_size: Records per batch
             workers: Parallel download workers
             since: Only process records updated since this time
+            process_pdfs: If True and pdf_processor is set, process downloaded PDFs
 
         Returns:
-            Tuple of (files_downloaded, files_failed)
+            Tuple of (files_downloaded, files_failed, pdfs_processed, pdfs_failed, pdf_pages_indexed)
         """
         files_downloaded = 0
         files_failed = 0
+        pdfs_processed = 0
+        pdfs_failed = 0
+        pdf_pages_indexed = 0
 
         # Build query
         if since:
@@ -648,22 +731,51 @@ class SyncManager:
                 all_files.extend(detected)
 
         if not all_files:
-            return 0, 0
+            return 0, 0, 0, 0, 0
 
         self._logger.info(f"Downloading {len(all_files)} files from {table}")
+
+        # Track downloaded PDFs for processing
+        downloaded_pdfs: list[tuple] = []  # List of (DetectedFile, Path)
+
+        # Build lookup for DetectedFile by s3_key
+        file_lookup = {f.s3_key or f.url or "": f for f in all_files}
 
         # Download files in parallel
         async for result in file_downloader.download_batch(all_files, workers=workers):
             if result.success:
                 files_downloaded += 1
                 self._logger.debug(f"Downloaded: {result.s3_key}")
+
+                # Track PDFs for processing
+                if process_pdfs and result.local_path:
+                    file_ext = result.local_path.suffix.lower()
+                    if file_ext == ".pdf":
+                        detected_file = file_lookup.get(result.s3_key)
+                        if detected_file:
+                            downloaded_pdfs.append((detected_file, result.local_path))
             elif result.status == "skipped":
                 self._logger.debug(f"Skipped: {result.s3_key} - {result.error}")
             else:
                 files_failed += 1
                 self._logger.warning(f"Failed to download {result.s3_key}: {result.error}")
 
-        return files_downloaded, files_failed
+        # Process PDFs with ColPali if enabled
+        if process_pdfs and downloaded_pdfs and self._pdf_processor:
+            self._logger.info(f"Processing {len(downloaded_pdfs)} PDFs from {table}")
+            results = self._pdf_processor.process_batch(downloaded_pdfs)
+
+            for pdf_result in results:
+                if pdf_result.success:
+                    pdfs_processed += 1
+                    pdf_pages_indexed += pdf_result.pages_indexed
+                else:
+                    pdfs_failed += 1
+                    self._logger.warning(
+                        f"Failed to process PDF {pdf_result.file.filename}: {pdf_result.error}"
+                    )
+
+        return files_downloaded, files_failed, pdfs_processed, pdfs_failed, pdf_pages_indexed
 
     async def _save_checkpoint(
         self,
@@ -780,7 +892,7 @@ class SyncManager:
             }
 
             try:
-                await self._vespa.feed_data_point(
+                self._vespa.feed_data_point(
                     schema="procore_schema_metadata",
                     data_id=doc_id,
                     fields=doc,
@@ -830,7 +942,7 @@ class SyncManager:
         }
 
         try:
-            await self._vespa.feed_data_point(
+            self._vespa.feed_data_point(
                 schema="procore_schema_metadata",
                 data_id=full_schema_doc_id,
                 fields=full_schema_doc,

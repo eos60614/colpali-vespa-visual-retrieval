@@ -133,6 +133,11 @@ Examples:
         default=2,
         help="Parallel workers for file downloads (default: 2)",
     )
+    parser.add_argument(
+        "--process-pdfs",
+        action="store_true",
+        help="Process downloaded PDFs with ColPali for visual retrieval (requires --download-files)",
+    )
 
     # Other options
     parser.add_argument(
@@ -179,6 +184,11 @@ async def main() -> int:
         )
         return 1
 
+    # Validate --process-pdfs requires --download-files
+    if args.process_pdfs and not args.download_files:
+        logger.error("--process-pdfs requires --download-files to be enabled")
+        return 1
+
     start_time = datetime.utcnow()
 
     try:
@@ -207,15 +217,22 @@ async def main() -> int:
                 logger.info("DRY RUN MODE - No data will be indexed")
                 vespa_app = MockVespaApp()
             else:
-                # Import actual Vespa app
-                try:
-                    from backend.vespa_app import vespa_app
-                except ImportError:
-                    logger.warning(
-                        "Could not import vespa_app, using mock client. "
-                        "Ensure Vespa is configured."
-                    )
-                    vespa_app = MockVespaApp()
+                # Connect to Vespa
+                from vespa.application import Vespa
+                logger.info(f"Connecting to Vespa at {args.vespa_url}...")
+                vespa_app = Vespa(url=args.vespa_url)
+                vespa_app.wait_for_application_up(max_wait=60)
+                logger.info("Connected to Vespa")
+
+            # Initialize PDF processor if enabled
+            pdf_processor = None
+            if args.process_pdfs and not args.dry_run:
+                from backend.ingestion.pdf_processor import PDFProcessor
+                logger.info("Initializing PDF processor (model loads on first PDF)...")
+                pdf_processor = PDFProcessor(
+                    vespa_app=vespa_app,
+                    logger=logger,
+                )
 
             # Create sync manager
             sync_manager = SyncManager(
@@ -224,6 +241,7 @@ async def main() -> int:
                 schema_map=schema_map,
                 checkpoint_store=checkpoint_store,
                 logger=logger,
+                pdf_processor=pdf_processor,
             )
 
             # Build sync config
@@ -233,6 +251,7 @@ async def main() -> int:
                 batch_size=args.batch_size,
                 download_files=args.download_files,
                 file_workers=args.file_workers,
+                process_pdfs=args.process_pdfs,
             )
 
             # Get tables to process
@@ -277,6 +296,10 @@ async def main() -> int:
             if result.files_downloaded > 0:
                 logger.info(f"Files downloaded: {result.files_downloaded:,}")
                 logger.info(f"Files failed: {result.files_failed:,}")
+            if result.pdfs_processed > 0 or result.pdfs_failed > 0:
+                logger.info(f"PDFs processed: {result.pdfs_processed:,}")
+                logger.info(f"PDFs failed: {result.pdfs_failed:,}")
+                logger.info(f"PDF pages indexed: {result.pdf_pages_indexed:,}")
             logger.info(f"Duration: {duration}")
             logger.info("=" * 60)
 

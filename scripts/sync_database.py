@@ -124,6 +124,24 @@ Examples:
         help="Records per batch (default: 1000)",
     )
 
+    # File processing options
+    parser.add_argument(
+        "--download-files",
+        action="store_true",
+        help="Download and index S3 files during sync",
+    )
+    parser.add_argument(
+        "--file-workers",
+        type=int,
+        default=2,
+        help="Parallel workers for file downloads (default: 2)",
+    )
+    parser.add_argument(
+        "--process-pdfs",
+        action="store_true",
+        help="Process downloaded PDFs with ColPali for visual retrieval (requires --download-files)",
+    )
+
     parser.add_argument(
         "--verbose",
         "-v",
@@ -198,8 +216,16 @@ class SyncDaemon:
         result = await self._sync_manager.run_incremental_sync(self._sync_config)
 
         duration = datetime.utcnow() - start_time
+
+        # Build status message
+        stats = [f"{result.records_processed} records"]
+        if result.files_downloaded > 0:
+            stats.append(f"{result.files_downloaded} files")
+        if result.pdfs_processed > 0:
+            stats.append(f"{result.pdfs_processed} PDFs ({result.pdf_pages_indexed} pages)")
+
         self._logger.info(
-            f"Sync cycle completed: {result.records_processed} records "
+            f"Sync cycle completed: {', '.join(stats)} "
             f"in {duration.total_seconds():.1f}s"
         )
 
@@ -253,6 +279,11 @@ async def main() -> int:
             "Database URL not provided. Set PROCORE_DATABASE_URL environment variable "
             "or use --database-url argument."
         )
+        return 1
+
+    # Validate --process-pdfs requires --download-files
+    if args.process_pdfs and not args.download_files:
+        logger.error("--process-pdfs requires --download-files to be enabled")
         return 1
 
     try:
@@ -312,14 +343,21 @@ async def main() -> int:
             logger.info(f"Schema loaded: {len(schema_map.tables)} tables")
 
             # Set up Vespa client
-            try:
-                from backend.vespa_app import vespa_app
-            except ImportError:
-                logger.warning(
-                    "Could not import vespa_app, using mock client. "
-                    "Ensure Vespa is configured."
+            from vespa.application import Vespa
+            logger.info(f"Connecting to Vespa at {args.vespa_url}...")
+            vespa_app = Vespa(url=args.vespa_url)
+            vespa_app.wait_for_application_up(max_wait=60)
+            logger.info("Connected to Vespa")
+
+            # Initialize PDF processor if enabled
+            pdf_processor = None
+            if args.process_pdfs:
+                from backend.ingestion.pdf_processor import PDFProcessor
+                logger.info("Initializing PDF processor (model loads on first PDF)...")
+                pdf_processor = PDFProcessor(
+                    vespa_app=vespa_app,
+                    logger=logger,
                 )
-                vespa_app = MockVespaApp()
 
             # Create sync manager
             sync_manager = SyncManager(
@@ -328,6 +366,7 @@ async def main() -> int:
                 schema_map=schema_map,
                 checkpoint_store=checkpoint_store,
                 logger=logger,
+                pdf_processor=pdf_processor,
             )
 
             # Build sync config
@@ -335,6 +374,9 @@ async def main() -> int:
                 tables=args.tables,
                 exclude_tables=args.exclude,
                 batch_size=args.batch_size,
+                download_files=args.download_files,
+                file_workers=args.file_workers,
+                process_pdfs=args.process_pdfs,
             )
 
             if args.daemon:
@@ -357,6 +399,13 @@ async def main() -> int:
                 logger.info(f"Sync completed: {result.status}")
                 logger.info(f"Records processed: {result.records_processed:,}")
                 logger.info(f"Records failed: {result.records_failed:,}")
+                if result.files_downloaded > 0:
+                    logger.info(f"Files downloaded: {result.files_downloaded:,}")
+                    logger.info(f"Files failed: {result.files_failed:,}")
+                if result.pdfs_processed > 0 or result.pdfs_failed > 0:
+                    logger.info(f"PDFs processed: {result.pdfs_processed:,}")
+                    logger.info(f"PDFs failed: {result.pdfs_failed:,}")
+                    logger.info(f"PDF pages indexed: {result.pdf_pages_indexed:,}")
                 logger.info("=" * 60)
 
                 if result.errors:

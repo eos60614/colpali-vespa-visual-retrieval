@@ -24,7 +24,9 @@ from fasthtml.components import (
     Li,
     Strong,
     Iframe,
+    Textarea,
 )
+from fasthtml.common import Input as HtmlInput
 from fasthtml.xtend import A, Script
 from lucide_fasthtml import Lucide
 from shad4fast import Badge, Button, Input, Label, RadioGroup, RadioGroupItem, Separator
@@ -765,4 +767,255 @@ def ChatResult(query_id: str, query: str, doc_ids: Optional[list] = None):
         ),
         id="chat_messages",
         cls="h-full grid grid-rows-[auto_1fr_auto] min-h-0 gap-3",
+    )
+
+
+def UploadForm():
+    """File upload form component with metadata fields."""
+    return Form(
+        Div(
+            Div(
+                Label("PDF File", htmlFor="pdf_file", cls="text-sm font-medium"),
+                Div(
+                    Lucide(icon="file-up", cls="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"),
+                    Div(
+                        "Choose a PDF file (max 250MB)",
+                        id="file-label",
+                        cls="text-sm text-muted-foreground",
+                    ),
+                    HtmlInput(
+                        type="file",
+                        name="pdf_file",
+                        id="pdf_file",
+                        accept=".pdf,application/pdf",
+                        cls="absolute inset-0 w-full h-full opacity-0 cursor-pointer",
+                        onchange="document.getElementById('file-label').textContent = this.files[0]?.name || 'Choose a PDF file (max 250MB)'",
+                    ),
+                    cls="relative flex items-center gap-2 pl-10 pr-4 py-3 border border-input rounded-md bg-background hover:bg-muted cursor-pointer",
+                ),
+                cls="grid gap-2",
+            ),
+            Div(
+                Label("Title (optional)", htmlFor="title", cls="text-sm font-medium"),
+                Input(
+                    type="text",
+                    name="title",
+                    id="title",
+                    placeholder="Custom document title",
+                    maxlength="200",
+                    cls="border border-input rounded-md px-3 py-2",
+                ),
+                cls="grid gap-2",
+            ),
+            Div(
+                Label("Description (optional)", htmlFor="description", cls="text-sm font-medium"),
+                Textarea(
+                    name="description",
+                    id="description",
+                    placeholder="Brief description of the document",
+                    maxlength="1000",
+                    rows="3",
+                    cls="border border-input rounded-md px-3 py-2 resize-none w-full",
+                ),
+                cls="grid gap-2",
+            ),
+            Div(
+                Label("Tags (optional)", htmlFor="tags", cls="text-sm font-medium"),
+                Input(
+                    type="text",
+                    name="tags",
+                    id="tags",
+                    placeholder="Comma-separated tags (e.g., finance, report, 2024)",
+                    cls="border border-input rounded-md px-3 py-2",
+                ),
+                P("Maximum 20 tags, each up to 50 characters", cls="text-xs text-muted-foreground"),
+                cls="grid gap-2",
+            ),
+            Button(
+                Lucide(icon="upload", cls="mr-2"),
+                "Upload PDF",
+                type="submit",
+                cls="w-full",
+            ),
+            cls="grid gap-6",
+        ),
+        hx_post="/upload",
+        hx_encoding="multipart/form-data",
+        hx_target="#upload-result",
+        hx_swap="innerHTML",
+        hx_indicator="#upload-indicator",
+        cls="grid gap-4 p-6 bg-muted rounded-lg border border-input max-w-lg mx-auto",
+    )
+
+
+def UploadPage():
+    """Upload page wrapper component."""
+    return Div(
+        Div(
+            H1("Upload PDF Document", cls="text-3xl font-bold tracking-wide"),
+            P(
+                "Upload a PDF document to make it searchable. The document will be processed and indexed for visual retrieval.",
+                cls="text-muted-foreground",
+            ),
+            cls="text-center grid gap-2 mb-8",
+        ),
+        UploadForm(),
+        Div(
+            Div(
+                Lucide(icon="loader-circle", cls="size-5 mr-1.5 animate-spin"),
+                Span("Processing your document...", cls="text-base"),
+                cls="flex items-center justify-center text-muted-foreground",
+            ),
+            id="upload-indicator",
+            cls="htmx-indicator p-4",
+        ),
+        Div(id="upload-result", cls="mt-6"),
+        cls="w-full max-w-screen-md mx-auto mt-[8vh] px-4",
+    )
+
+
+def UploadSidebar():
+    """Sidebar navigation for the upload page."""
+    return Div(
+        Div(
+            H3("Quick Links", cls="text-lg font-semibold mb-4"),
+            Div(
+                A(
+                    Div(
+                        Lucide(icon="search", size="18"),
+                        Span("Search Documents"),
+                        cls="flex items-center gap-2",
+                    ),
+                    href="/",
+                    cls="block p-2 rounded-md hover:bg-muted transition-colors",
+                ),
+                A(
+                    Div(
+                        Lucide(icon="info", size="18"),
+                        Span("About This Demo"),
+                        cls="flex items-center gap-2",
+                    ),
+                    href="/about-this-demo",
+                    cls="block p-2 rounded-md hover:bg-muted transition-colors",
+                ),
+                cls="grid gap-1",
+            ),
+            cls="mb-8",
+        ),
+        Div(
+            H3("Upload Tips", cls="text-lg font-semibold mb-4"),
+            Ul(
+                Li(
+                    Div(
+                        Lucide(icon="file-check", size="16", cls="text-green-500 mt-0.5"),
+                        Span("PDF files up to 250MB", cls="text-sm text-muted-foreground"),
+                        cls="flex items-start gap-2",
+                    ),
+                ),
+                Li(
+                    Div(
+                        Lucide(icon="tag", size="16", cls="text-blue-500 mt-0.5"),
+                        Span("Add tags to improve search relevance", cls="text-sm text-muted-foreground"),
+                        cls="flex items-start gap-2",
+                    ),
+                ),
+                Li(
+                    Div(
+                        Lucide(icon="clock", size="16", cls="text-orange-500 mt-0.5"),
+                        Span("Large files may take a few minutes to process", cls="text-sm text-muted-foreground"),
+                        cls="flex items-start gap-2",
+                    ),
+                ),
+                Li(
+                    Div(
+                        Lucide(icon="lock", size="16", cls="text-red-500 mt-0.5"),
+                        Span("Password-protected PDFs are not supported", cls="text-sm text-muted-foreground"),
+                        cls="flex items-start gap-2",
+                    ),
+                ),
+                cls="grid gap-3",
+            ),
+            cls="mb-8",
+        ),
+        Div(
+            H3("Supported Content", cls="text-lg font-semibold mb-4"),
+            P(
+                "ColPali uses visual embeddings to understand document content including:",
+                cls="text-sm text-muted-foreground mb-3",
+            ),
+            Ul(
+                Li("Text and paragraphs", cls="text-sm text-muted-foreground"),
+                Li("Tables and charts", cls="text-sm text-muted-foreground"),
+                Li("Images and diagrams", cls="text-sm text-muted-foreground"),
+                Li("Infographics", cls="text-sm text-muted-foreground"),
+                cls="list-disc list-inside grid gap-1",
+            ),
+        ),
+        cls="p-5",
+    )
+
+
+def UploadSuccess(title: str, pages_indexed: int):
+    """Success message component after successful upload."""
+    return Div(
+        Div(
+            Lucide(icon="check-circle", size="48", cls="text-green-500"),
+            cls="flex justify-center mb-4",
+        ),
+        H3("Upload Successful", cls="text-xl font-semibold text-center"),
+        P(
+            f'Document "{title}" has been processed.',
+            cls="text-center text-muted-foreground",
+        ),
+        P(
+            f"{pages_indexed} pages indexed and ready for search.",
+            cls="text-center text-muted-foreground",
+        ),
+        Div(
+            A(
+                Button(
+                    Lucide(icon="search", cls="mr-2"),
+                    "Go to Search",
+                    variant="default",
+                ),
+                href="/",
+            ),
+            A(
+                Button(
+                    Lucide(icon="upload", cls="mr-2"),
+                    "Upload Another",
+                    variant="outline",
+                ),
+                href="/upload",
+            ),
+            cls="flex justify-center gap-4 mt-6",
+        ),
+        cls="p-6 bg-green-50 dark:bg-green-950 rounded-lg border border-green-200 dark:border-green-800",
+    )
+
+
+def UploadError(error_message: str):
+    """Error message component for upload failures."""
+    return Div(
+        Div(
+            Lucide(icon="x-circle", size="48", cls="text-red-500"),
+            cls="flex justify-center mb-4",
+        ),
+        H3("Upload Failed", cls="text-xl font-semibold text-center"),
+        P(
+            error_message,
+            cls="text-center text-muted-foreground",
+        ),
+        Div(
+            A(
+                Button(
+                    Lucide(icon="refresh-cw", cls="mr-2"),
+                    "Try Again",
+                    variant="default",
+                ),
+                href="/upload",
+            ),
+            cls="flex justify-center mt-6",
+        ),
+        cls="p-6 bg-red-50 dark:bg-red-950 rounded-lg border border-red-200 dark:border-red-800",
     )

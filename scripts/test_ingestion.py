@@ -10,6 +10,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -262,6 +264,7 @@ def test_transform_record():
     return True
 
 
+@pytest.mark.asyncio
 async def test_index_record():
     """Test record indexing to mock Vespa."""
     print("\n" + "=" * 60)

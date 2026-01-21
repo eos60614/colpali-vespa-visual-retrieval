@@ -16,6 +16,7 @@ class VespaQueryClient:
     MAX_QUERY_TERMS = 64
     VESPA_SCHEMA_NAME = "pdf_page"
     SELECT_FIELDS = "id,title,url,blur_image,page_number,snippet,text"
+    SELECT_FIELDS_WITH_EMBEDDING = "id,title,url,blur_image,page_number,snippet,text,embedding_float"
 
     def __init__(self, logger: logging.Logger):
         """
@@ -88,11 +89,13 @@ class VespaQueryClient:
         self.app.wait_for_application_up()
         self.logger.info(f"Connected to Vespa at {self.vespa_app_url}")
 
-    def get_fields(self, sim_map: bool = False):
-        if not sim_map:
-            return self.SELECT_FIELDS
-        else:
+    def get_fields(self, sim_map: bool = False, include_embedding: bool = False):
+        if sim_map:
             return "summaryfeatures"
+        elif include_embedding:
+            return self.SELECT_FIELDS_WITH_EMBEDDING
+        else:
+            return self.SELECT_FIELDS
 
     def format_query_results(
         self, query: str, response: VespaQueryResponse, hits: int = 5
@@ -230,6 +233,9 @@ class VespaQueryClient:
         q_embs: torch.Tensor,
         ranking: str,
         idx_to_token: dict,
+        rerank: bool = False,
+        rerank_hits: int = 20,
+        final_hits: int = 3,
     ) -> Dict[str, Any]:
         """
         Get query results from Vespa based on the ranking method.
@@ -239,31 +245,65 @@ class VespaQueryClient:
             q_embs (torch.Tensor): Query embeddings.
             ranking (str): The ranking method to use.
             idx_to_token (dict): Index to token mapping.
+            rerank (bool): Whether to perform application-level reranking.
+            rerank_hits (int): Number of candidates to fetch for reranking.
+            final_hits (int): Number of final results to return after reranking.
 
         Returns:
             Dict[str, Any]: The query results.
         """
+        from .rerank import rerank_results
 
         # Remove stopwords from the query to avoid visual emphasis on irrelevant words (e.g., "the", "and", "of")
         query = backend.stopwords.filter(query)
 
         rank_method = ranking.split("_")[0]
         sim_map: bool = len(ranking.split("_")) > 1 and ranking.split("_")[1] == "sim"
+
+        # Determine hits to fetch - more if reranking
+        hits_to_fetch = rerank_hits if rerank else final_hits
+
         if rank_method == "colpali":  # ColPali
             result = await self.query_vespa_colpali(
-                query=query, ranking=rank_method, q_emb=q_embs, sim_map=sim_map
+                query=query,
+                ranking=rank_method,
+                q_emb=q_embs,
+                sim_map=sim_map,
+                include_embedding=rerank,
+                hits=hits_to_fetch,
             )
         elif rank_method == "hybrid":  # Hybrid ColPali+BM25
             result = await self.query_vespa_colpali(
-                query=query, ranking=rank_method, q_emb=q_embs, sim_map=sim_map
+                query=query,
+                ranking=rank_method,
+                q_emb=q_embs,
+                sim_map=sim_map,
+                include_embedding=rerank,
+                hits=hits_to_fetch,
             )
         elif rank_method == "bm25":
-            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map)
+            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map, hits=hits_to_fetch)
         else:
             raise ValueError(f"Unsupported ranking: {rank_method}")
+
         if "root" not in result or "children" not in result["root"]:
             result["root"] = {"children": []}
             return result
+
+        # Perform application-level reranking if requested
+        if rerank and result["root"]["children"]:
+            self.logger.info(f"Reranking {len(result['root']['children'])} candidates")
+            reranked = rerank_results(q_embs, result["root"]["children"])
+            # Take top final_hits after reranking
+            result["root"]["children"] = reranked[:final_hits]
+            # Remove embeddings from final results to reduce payload size
+            for child in result["root"]["children"]:
+                fields = child.get("fields", {})
+                if "embedding_float" in fields:
+                    del fields["embedding_float"]
+                if "embedding" in fields:
+                    del fields["embedding"]
+
         for single_result in result["root"]["children"]:
             self.logger.debug(single_result["fields"].keys())
         return result
@@ -396,6 +436,7 @@ class VespaQueryClient:
         hits: int = 3,
         timeout: str = "10s",
         sim_map: bool = False,
+        include_embedding: bool = False,
         **kwargs,
     ) -> dict:
         """
@@ -405,9 +446,12 @@ class VespaQueryClient:
         Args:
             query (str): The query text.
             q_emb (torch.Tensor): Query embeddings.
-            target_hits_per_query_tensor (int, optional): Target hits per query tensor. Defaults to 20.
+            target_hits_per_query_tensor (int, optional): Target hits per query tensor. Defaults to 100.
+            hnsw_explore_additional_hits (int, optional): Additional HNSW exploration. Defaults to 300.
             hits (int, optional): Number of hits to retrieve. Defaults to 3.
             timeout (str, optional): Query timeout. Defaults to "10s".
+            sim_map (bool, optional): Whether to return similarity map features. Defaults to False.
+            include_embedding (bool, optional): Whether to include embeddings for reranking. Defaults to False.
 
         Returns:
             dict: The formatted query results.
@@ -432,7 +476,7 @@ class VespaQueryClient:
                     **query_tensors,
                     "presentation.timing": True,
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where {nn_string} or userQuery()"
+                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {nn_string} or userQuery()"
                     ),
                     "ranking.profile": self.get_rank_profile(
                         ranking=ranking, sim_map=sim_map

@@ -7,7 +7,9 @@ services:
       - "8080:8080"      # Query/feed API
       - "19071:19071"    # Config server
     volumes:
-      - vespa-data:/opt/vespa/var
+      # Storage: Mount a directory with at least 500 GB available
+      # Option A (bind mount): Use VESPA_DATA_DIR env var or default to ./vespa-data
+      - ${VESPA_DATA_DIR:-./vespa-data}:/opt/vespa/var
       - ./vespa-app:/app
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:19071/state/v1/health || exit 1"]
@@ -15,6 +17,3 @@ services:
       timeout: 10s
       retries: 10
       start_period: 120s
-
-volumes:
-  vespa-data:

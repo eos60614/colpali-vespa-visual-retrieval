@@ -46,6 +46,9 @@ schema pdf_page {
                 }
             }
         }
+        field embedding_float type tensor<float>(patch{}, v[128]) {
+            indexing: attribute
+        }
         field questions type array<string> {
             indexing: summary | index
             match: text
@@ -53,6 +56,15 @@ schema pdf_page {
         field queries type array<string> {
             indexing: summary | index
             match: text
+        }
+        field description type string {
+            indexing: summary | index
+            match: text
+        }
+        field tags type array<string> {
+            indexing: summary | index
+            match: text
+            index: enable-bm25
         }
     }
 
@@ -224,7 +236,7 @@ schema pdf_page {
             expression: max_sim_binary
         }
         second-phase {
-            expression: max_sim + 2 * (bm25(text) + bm25(title))
+            expression: max_sim + 2 * (bm25(text) + bm25(title) + bm25(tags))
             rerank-count: 10
         }
     }

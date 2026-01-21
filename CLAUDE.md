@@ -3,7 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-01-14
 
 ## Active Technologies
-
+- Python 3.12 + FastHTML, HTMX, PyMuPDF (fitz), ColPali, Vespa Python client (002-file-upload-ingest)
+- Vespa (document store), filesystem (temporary upload storage) (002-file-upload-ingest)
 - Python 3.11+ (matching existing codebase) + asyncpg, boto3, pyvespa (existing), sqlalchemy (metadata reflection) (001-procore-db-ingestion)
 
 ## Project Structure
@@ -13,6 +14,8 @@ backend/
 ├── __init__.py
 ├── vespa_app.py          # Existing Vespa client
 ├── colpali.py            # Existing ColPali integration
+├── ingest.py             # PDF ingestion for file uploads
+├── rerank.py             # Application-level reranking
 └── ingestion/            # Database ingestion module
     ├── __init__.py
     ├── db_connection.py      # PostgreSQL connection
@@ -25,16 +28,17 @@ backend/
     ├── checkpoint.py         # Sync checkpoints
     └── exceptions.py         # Custom exceptions
 
+frontend/
+tests/
+├── unit/ingestion/       # Unit tests
+├── integration/ingestion/ # Integration tests
+└── conftest.py           # Shared fixtures
+
 scripts/
 ├── feed_data.py          # Existing PDF feeder
 ├── discover_schema.py    # Schema discovery CLI
 ├── ingest_database.py    # Full ingestion CLI
 └── sync_database.py      # Sync daemon CLI
-
-tests/
-├── unit/ingestion/       # Unit tests
-├── integration/ingestion/ # Integration tests
-└── conftest.py           # Shared fixtures
 ```
 
 ## Commands
@@ -81,7 +85,7 @@ LOG_LEVEL=INFO
 
 ## Code Style
 
-Python 3.11+ (matching existing codebase): Follow standard conventions
+Python 3.11+: Follow standard conventions
 
 ## Vespa Schemas
 
@@ -107,7 +111,7 @@ Navigable schema metadata for agents to understand database structure:
 - `incoming_relationships`: Links to this table
 
 ## Recent Changes
-
+- 002-file-upload-ingest: Added Python 3.12 + FastHTML, HTMX, PyMuPDF (fitz), ColPali, Vespa Python client
 - 001-procore-db-ingestion: Added Python 3.11+ (matching existing codebase) + asyncpg, boto3, pyvespa (existing), sqlalchemy (metadata reflection)
 - 001-procore-db-ingestion: Implemented User Story 5 - Agent Navigation Metadata with bidirectional relationships, file provenance, and schema metadata indexing
 
