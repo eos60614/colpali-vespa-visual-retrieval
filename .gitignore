@@ -13,6 +13,8 @@ build/
 # Logs
 *.log
 app.log
+logs/*
+!logs/.gitkeep
 
 # Runtime generated files
 static/full_images/

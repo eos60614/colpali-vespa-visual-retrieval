@@ -50,6 +50,10 @@ from backend.ingestion.sync_manager import (
     SyncResult,
     IngestionJob,
 )
+from backend.ingestion.pdf_processor import (
+    PDFProcessor,
+    PDFProcessingResult,
+)
 
 __all__ = [
     # Exceptions
@@ -95,4 +99,7 @@ __all__ = [
     "SyncConfig",
     "SyncResult",
     "IngestionJob",
+    # PDF Processing
+    "PDFProcessor",
+    "PDFProcessingResult",
 ]

@@ -601,8 +601,8 @@ class RecordIngester:
             if incoming_hints:
                 doc["incoming_relationships"] = [json.dumps(h) for h in incoming_hints]
 
-            # Feed to Vespa
-            await self._vespa.feed_data_point(
+            # Feed to Vespa (synchronous call)
+            self._vespa.feed_data_point(
                 schema="procore_record",
                 data_id=record.doc_id,
                 fields=doc,

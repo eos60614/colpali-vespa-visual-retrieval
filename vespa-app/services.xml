@@ -24,9 +24,6 @@
         </documents>
         <engine>
             <proton>
-                <resource-limits>
-                    <disk>0.90</disk>
-                </resource-limits>
                 <tuning>
                     <searchnode>
                         <requestthreads>
@@ -35,7 +32,7 @@
                     </searchnode>
                 </tuning>
                 <resource-limits>
-                    <disk>0.85</disk>
+                    <disk>0.90</disk>
                     <memory>0.90</memory>
                 </resource-limits>
             </proton>

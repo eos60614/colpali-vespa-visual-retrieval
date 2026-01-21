@@ -56,6 +56,18 @@ def float_to_binary_embedding(float_embedding: np.ndarray) -> list:
     return binary.tolist()
 
 
+def sanitize_text(text: str) -> str:
+    """Remove illegal control characters from extracted PDF text.
+
+    Vespa rejects text containing certain control characters like null (0x0).
+    This removes all ASCII control characters except common whitespace.
+    """
+    if not text:
+        return text
+    # Remove ASCII control chars (0x00-0x1F and 0x7F) except tab, newline, carriage return
+    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+
+
 def pdf_to_images(file_bytes: bytes, dpi: int = 150) -> Tuple[List[Image.Image], List[str]]:
     """
     Convert PDF bytes to list of PIL Images and extracted text per page.
@@ -73,8 +85,8 @@ def pdf_to_images(file_bytes: bytes, dpi: int = 150) -> Tuple[List[Image.Image],
         pix = page.get_pixmap(dpi=dpi)
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         images.append(img)
-        # Extract text
-        text = page.get_text("text").strip()
+        # Extract text and sanitize (remove illegal control characters)
+        text = sanitize_text(page.get_text("text").strip())
         texts.append(text)
     doc.close()
 
