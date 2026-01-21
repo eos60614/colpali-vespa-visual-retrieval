@@ -46,6 +46,9 @@ schema pdf_page {
                 }
             }
         }
+        field embedding_float type tensor<float>(patch{}, v[128]) {
+            indexing: attribute
+        }
         field questions type array<string> {
             indexing: summary | index
             match: text

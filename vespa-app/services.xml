@@ -22,6 +22,9 @@
         </documents>
         <engine>
             <proton>
+                <resource-limits>
+                    <disk>0.90</disk>
+                </resource-limits>
                 <tuning>
                     <searchnode>
                         <requestthreads>

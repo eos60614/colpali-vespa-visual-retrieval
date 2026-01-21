@@ -306,13 +306,16 @@ def get(request, query: str = "", ranking: str = "hybrid"):
 
 
 @rt("/fetch_results")
-async def get(session, request, query: str, ranking: str):
+async def get(session, request, query: str, ranking: str, rerank: str = "true"):
     if "hx-request" not in request.headers:
         return RedirectResponse("/search")
 
+    # Parse rerank parameter (default to True for better results)
+    do_rerank = rerank.lower() in ("true", "1", "yes")
+
     # Get the hash of the query and ranking value
     query_id = generate_query_id(query, ranking)
-    logger.info(f"Query id in /fetch_results: {query_id}")
+    logger.info(f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}")
     # Run the embedding and query against Vespa app
     start_inference = time.perf_counter()
     q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
@@ -330,6 +333,9 @@ async def get(session, request, query: str, ranking: str):
         q_embs=q_embs,
         ranking=ranking,
         idx_to_token=idx_to_token,
+        rerank=do_rerank,
+        rerank_hits=20,  # Fetch 20 candidates for reranking
+        final_hits=3,    # Return top 3 after reranking
     )
     end = time.perf_counter()
     logger.info(

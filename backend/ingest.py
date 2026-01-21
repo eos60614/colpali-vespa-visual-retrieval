@@ -81,12 +81,12 @@ def pdf_to_images(file_bytes: bytes, dpi: int = 150) -> Tuple[List[Image.Image],
     return images, texts
 
 
-def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = 4) -> List[dict]:
+def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = 4) -> List[Tuple[dict, dict]]:
     """
-    Generate ColPali embeddings for images.
+    Generate ColQwen2.5 embeddings for images.
 
     Returns:
-        List of embedding dictionaries in Vespa tensor format
+        List of tuples (binary_embedding, float_embedding) in Vespa tensor format
     """
     import torch
 
@@ -99,17 +99,28 @@ def generate_embeddings(model, processor, images: List[Image.Image], device: str
             batch_inputs = processor.process_images(batch_images).to(device)
             embeddings = model(**batch_inputs)
 
-        # Convert to binary embeddings in Vespa tensor format
+        # Convert to both binary and float embeddings in Vespa tensor format
         for emb in embeddings:
             emb_np = emb.cpu().float().numpy()
             # Vespa expects {"blocks": {"0": [...], "1": [...], ...}} format
+
+            # Binary embeddings for HNSW search (compact)
             binary_embs = {
                 "blocks": {
                     str(patch_idx): float_to_binary_embedding(patch_emb)
                     for patch_idx, patch_emb in enumerate(emb_np)
                 }
             }
-            all_embeddings.append(binary_embs)
+
+            # Float embeddings for precise reranking
+            float_embs = {
+                "blocks": {
+                    str(patch_idx): patch_emb.tolist()
+                    for patch_idx, patch_emb in enumerate(emb_np)
+                }
+            }
+
+            all_embeddings.append((binary_embs, float_embs))
 
     return all_embeddings
 
@@ -214,7 +225,7 @@ def ingest_pdf(
     pages_indexed = 0
     failed_pages = []
 
-    for page_num, (image, embedding) in enumerate(zip(images, embeddings)):
+    for page_num, (image, (binary_embedding, float_embedding)) in enumerate(zip(images, embeddings)):
         page_text = texts[page_num] if page_num < len(texts) else ""
 
         # Create snippet from first 200 chars of text or default
@@ -237,7 +248,8 @@ def ingest_pdf(
                 "tags": tags,
                 "blur_image": create_blur_image(image),
                 "full_image": image_to_base64(image),
-                "embedding": embedding,
+                "embedding": binary_embedding,
+                "embedding_float": float_embedding,
                 "questions": [],
                 "queries": [],
             },

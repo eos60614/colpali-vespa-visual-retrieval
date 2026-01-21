@@ -34,20 +34,20 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def get_colpali_model():
-    """Load ColPali model for generating embeddings."""
+    """Load ColQwen2.5 model for generating embeddings."""
     import torch
-    from colpali_engine.models import ColPali, ColPaliProcessor
+    from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
 
-    model_name = "vidore/colpali-v1.2"
+    model_name = "tsystems/colqwen2.5-3b-multilingual-v1.0"
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model = ColPali.from_pretrained(
+    processor = ColQwen2_5_Processor.from_pretrained(model_name)
+
+    model = ColQwen2_5.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         device_map=device,
     ).eval()
-
-    processor = ColPaliProcessor.from_pretrained(model_name)
 
     return model, processor, device
 
@@ -73,7 +73,11 @@ def float_to_binary_embedding(float_embedding: np.ndarray) -> list:
 
 
 def generate_embeddings(model, processor, images: list, device: str, batch_size: int = 4):
-    """Generate ColPali embeddings for images."""
+    """Generate ColQwen2.5 embeddings for images.
+
+    Returns:
+        List of tuples (binary_embedding, float_embedding) in Vespa tensor format
+    """
     import torch
 
     all_embeddings = []
@@ -85,17 +89,28 @@ def generate_embeddings(model, processor, images: list, device: str, batch_size:
             batch_inputs = processor.process_images(batch_images).to(device)
             embeddings = model(**batch_inputs)
 
-        # Convert to binary embeddings in Vespa tensor format
+        # Convert to both binary and float embeddings in Vespa tensor format
         for emb in embeddings:
             emb_np = emb.cpu().float().numpy()
             # Vespa expects {"blocks": {"0": [...], "1": [...], ...}} format
+
+            # Binary embeddings for HNSW search (compact)
             binary_embs = {
                 "blocks": {
                     str(patch_idx): float_to_binary_embedding(patch_emb)
                     for patch_idx, patch_emb in enumerate(emb_np)
                 }
             }
-            all_embeddings.append(binary_embs)
+
+            # Float embeddings for precise reranking
+            float_embs = {
+                "blocks": {
+                    str(patch_idx): patch_emb.tolist()
+                    for patch_idx, patch_emb in enumerate(emb_np)
+                }
+            }
+
+            all_embeddings.append((binary_embs, float_embs))
 
     return all_embeddings
 
@@ -159,7 +174,7 @@ def process_single_pdf(pdf_path: Path, model, processor, device: str) -> List[di
     embeddings = generate_embeddings(model, processor, images, device)
 
     docs = []
-    for page_num, (image, embedding) in enumerate(zip(images, embeddings)):
+    for page_num, (image, (binary_embedding, float_embedding)) in enumerate(zip(images, embeddings)):
         doc_id = f"{pdf_path.stem}_page_{page_num + 1}"
 
         docs.append({
@@ -173,7 +188,8 @@ def process_single_pdf(pdf_path: Path, model, processor, device: str) -> List[di
                 "snippet": f"Page {page_num + 1} of {pdf_path.name}",
                 "blur_image": create_blur_image(image),
                 "full_image": image_to_base64(image),
-                "embedding": embedding,
+                "embedding": binary_embedding,
+                "embedding_float": float_embedding,
                 "questions": [],
                 "queries": [],
             },
@@ -242,8 +258,8 @@ def main():
         print("Make sure Vespa is running: docker compose up -d")
         sys.exit(1)
 
-    # Load ColPali model
-    print("Loading ColPali model...")
+    # Load ColQwen model
+    print("Loading ColQwen model...")
     model, processor, device = get_colpali_model()
     print(f"Model loaded on {device}")
 
@@ -283,7 +299,7 @@ def main():
         # Generate embeddings in batches
         embeddings = generate_embeddings(model, processor, images, device, batch_size=args.batch_size)
 
-        for page_num, (image, embedding) in enumerate(zip(images, embeddings)):
+        for page_num, (image, (binary_embedding, float_embedding)) in enumerate(zip(images, embeddings)):
             doc_id = f"{pdf_path.stem}_page_{page_num + 1}"
             # Get text for this page (if available)
             page_text = texts[page_num] if page_num < len(texts) else ""
@@ -303,7 +319,8 @@ def main():
                     "snippet": snippet,
                     "blur_image": create_blur_image(image),
                     "full_image": image_to_base64(image),
-                    "embedding": embedding,
+                    "embedding": binary_embedding,
+                    "embedding_float": float_embedding,
                     "questions": [],
                     "queries": [],
                 },
