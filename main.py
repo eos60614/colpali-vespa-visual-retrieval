@@ -187,6 +187,8 @@ async def post(
     title: str = "",
     description: str = "",
     tags: str = "",
+    detect_regions: str = "",
+    use_vlm: str = "",
 ):
     """Handle PDF file upload and ingestion."""
     # Check if file was provided
@@ -246,6 +248,9 @@ async def post(
     vespa = vespa_app.app
 
     # Process the PDF
+    enable_regions = detect_regions.lower() in ("on", "true", "1", "yes")
+    enable_vlm = use_vlm.lower() in ("on", "true", "1", "yes")
+
     try:
         success, message, pages_indexed = ingest_pdf(
             file_bytes=file_bytes,
@@ -257,6 +262,8 @@ async def post(
             title=title if title.strip() else None,
             description=description,
             tags=tag_list,
+            detect_drawing_regions=enable_regions,
+            use_vlm_detection=enable_vlm,
         )
     except Exception as e:
         logger.error(f"Error processing PDF: {e}")

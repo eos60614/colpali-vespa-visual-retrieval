@@ -66,6 +66,22 @@ schema pdf_page {
             match: text
             index: enable-bm25
         }
+        field is_region type bool {
+            indexing: summary | attribute
+        }
+        field parent_doc_id type string {
+            indexing: summary | attribute
+        }
+        field region_label type string {
+            indexing: summary | index
+            match: text
+        }
+        field region_type type string {
+            indexing: summary | attribute
+        }
+        field region_bbox type string {
+            indexing: summary | attribute
+        }
     }
 
     fieldset default {
