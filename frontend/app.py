@@ -200,7 +200,7 @@ def ShareButtons():
     )
 
 
-def SearchBox(with_border=False, query_value="", ranking_value="hybrid"):
+def SearchBox(with_border=False, query_value="", ranking_value="hybrid", mode_value="oneshot"):
     grid_cls = "grid gap-2 items-center p-3 bg-muted w-full"
 
     if with_border:
@@ -245,7 +245,25 @@ def SearchBox(with_border=False, query_value="", ranking_value="hybrid"):
                     name="ranking",
                     default_value=ranking_value,
                     cls="grid-flow-col gap-x-5 text-muted-foreground",
-                    # Submit form when radio button is clicked
+                ),
+                cls="grid grid-flow-col items-center gap-x-3 border border-input px-3 rounded-sm",
+            ),
+            Div(
+                Span("Mode:", cls="text-muted-foreground text-xs font-semibold"),
+                RadioGroup(
+                    Div(
+                        RadioGroupItem(value="oneshot", id="oneshot"),
+                        Label("One-shot", htmlFor="oneshot"),
+                        cls="flex items-center space-x-2",
+                    ),
+                    Div(
+                        RadioGroupItem(value="agent", id="agent"),
+                        Label("Agent", htmlFor="agent"),
+                        cls="flex items-center space-x-2",
+                    ),
+                    name="mode",
+                    default_value=mode_value,
+                    cls="grid-flow-col gap-x-5 text-muted-foreground",
                 ),
                 cls="grid grid-flow-col items-center gap-x-3 border border-input px-3 rounded-sm",
             ),
@@ -256,14 +274,14 @@ def SearchBox(with_border=False, query_value="", ranking_value="hybrid"):
                 data_button="search-button",
                 disabled=True,
             ),
-            cls="flex justify-between",
+            cls="flex justify-between gap-2",
         ),
         check_input_script,
         autocomplete_script,
         submit_form_on_radio_change,
-        action=f"/search?query={quote_plus(query_value)}&ranking={quote_plus(ranking_value)}",
+        action=f"/search?query={quote_plus(query_value)}&ranking={quote_plus(ranking_value)}&mode={quote_plus(mode_value)}",
         method="GET",
-        hx_get="/fetch_results",  # As the component is a form, input components query and ranking are sent as query parameters automatically, see https://htmx.org/docs/#parameters
+        hx_get="/fetch_results",
         hx_trigger="load",
         hx_target="#search-results",
         hx_swap="outerHTML",
@@ -451,10 +469,11 @@ def AboutThisDemo():
 def Search(request, search_results=[]):
     query_value = request.query_params.get("query", "").strip()
     ranking_value = request.query_params.get("ranking", "hybrid")
+    mode_value = request.query_params.get("mode", "oneshot")
     return Div(
         Div(
             Div(
-                SearchBox(query_value=query_value, ranking_value=ranking_value),
+                SearchBox(query_value=query_value, ranking_value=ranking_value, mode_value=mode_value),
                 Div(
                     LoadingMessage(),
                     id="search-results",  # This will be replaced by the search results
@@ -528,6 +547,7 @@ def SearchResult(
     query_id: Optional[str] = None,
     search_time: float = 0,
     total_count: int = 0,
+    mode: str = "oneshot",
 ):
     if not results:
         return Div(
@@ -725,6 +745,11 @@ def SearchResult(
             ),
         )
 
+    if mode == "agent":
+        chat_component = AgentChatResult(query=query)
+    else:
+        chat_component = ChatResult(query_id=query_id, query=query, doc_ids=doc_ids)
+
     return [
         Div(
             SearchInfo(search_time, total_count),
@@ -736,7 +761,7 @@ def SearchResult(
             cls="grid grid-cols-1 gap-px bg-border min-h-0",
         ),
         Div(
-            ChatResult(query_id=query_id, query=query, doc_ids=doc_ids),
+            chat_component,
             hx_swap_oob="true",
             id="chat_messages",
         ),
@@ -765,6 +790,120 @@ def ChatResult(query_id: str, query: str, doc_ids: Optional[list] = None):
             id="chat-messages",
             cls="overflow-auto min-h-0 grid items-end px-5",
         ),
+        id="chat_messages",
+        cls="h-full grid grid-rows-[auto_1fr_auto] min-h-0 gap-3",
+    )
+
+
+# JavaScript for handling agent SSE events
+agent_sse_script = Script(
+    """
+    document.addEventListener('DOMContentLoaded', function() {
+        const container = document.getElementById('agent-sse-container');
+        if (!container) return;
+
+        const url = container.getAttribute('data-sse-url');
+        if (!url) return;
+
+        const stepsEl = document.getElementById('agent-steps');
+        const answerEl = document.getElementById('agent-answer');
+        const statusEl = document.getElementById('agent-status');
+
+        const source = new EventSource(url);
+
+        source.addEventListener('status', function(e) {
+            if (statusEl) statusEl.innerHTML = '<span class="text-muted-foreground text-sm">' + e.data + '</span>';
+        });
+
+        source.addEventListener('thinking', function(e) {
+            const step = document.createElement('div');
+            step.className = 'text-sm text-muted-foreground italic py-1';
+            step.innerHTML = '💭 ' + e.data;
+            if (stepsEl) stepsEl.appendChild(step);
+        });
+
+        source.addEventListener('tool_call', function(e) {
+            const data = JSON.parse(e.data);
+            const step = document.createElement('div');
+            step.className = 'text-sm py-1 border-l-2 border-blue-400 pl-2 my-1';
+            if (data.tool === 'search_documents') {
+                step.innerHTML = '<b>Step ' + data.step + ':</b> Searching for "<i>' + data.query + '</i>" (' + data.ranking + ')';
+            } else if (data.tool === 'get_page_text') {
+                step.innerHTML = '<b>Step ' + data.step + ':</b> Reading page text (result #' + (data.result_index + 1) + ')';
+            }
+            if (stepsEl) stepsEl.appendChild(step);
+        });
+
+        source.addEventListener('tool_result', function(e) {
+            const data = JSON.parse(e.data);
+            const step = document.createElement('div');
+            step.className = 'text-xs text-muted-foreground pl-2 mb-1';
+            if (data.tool === 'search_documents') {
+                step.innerHTML = '→ Found ' + data.num_results + ' results';
+            } else if (data.tool === 'get_page_text') {
+                step.innerHTML = '→ Read: ' + data.title;
+            }
+            if (stepsEl) stepsEl.appendChild(step);
+        });
+
+        source.addEventListener('answer', function(e) {
+            if (statusEl) statusEl.innerHTML = '';
+            if (answerEl) answerEl.innerHTML = e.data;
+        });
+
+        source.addEventListener('error', function(e) {
+            if (e.data) {
+                const step = document.createElement('div');
+                step.className = 'text-sm text-red-500 py-1';
+                step.innerHTML = e.data;
+                if (stepsEl) stepsEl.appendChild(step);
+            }
+        });
+
+        source.addEventListener('close', function(e) {
+            source.close();
+            if (statusEl && !answerEl.innerHTML) {
+                statusEl.innerHTML = '<span class="text-muted-foreground text-sm">Agent finished.</span>';
+            }
+        });
+
+        source.onerror = function() {
+            source.close();
+        };
+    });
+    """
+)
+
+
+def AgentChatResult(query: str):
+    """Chat result component for agent mode with multi-step reasoning display."""
+    sse_url = f"/get-agent-message?query={quote_plus(query)}"
+
+    return Div(
+        Div(
+            Lucide(icon="bot", size="18", cls="text-blue-500"),
+            Span("Agent Mode (Gemini-2.5)", cls="text-xl font-semibold"),
+            cls="flex items-center gap-2 p-5",
+        ),
+        Div(
+            Div(
+                Div(id="agent-status", cls="mb-2"),
+                Div(id="agent-steps", cls="grid gap-0.5 mb-4"),
+                Div(
+                    LoadingSkeleton(),
+                    id="agent-answer",
+                ),
+                cls="grid gap-2",
+            ),
+            id="chat-messages",
+            cls="overflow-auto min-h-0 px-5",
+        ),
+        Div(
+            id="agent-sse-container",
+            data_sse_url=sse_url,
+            cls="hidden",
+        ),
+        agent_sse_script,
         id="chat_messages",
         cls="h-full grid grid-rows-[auto_1fr_auto] min-h-0 gap-3",
     )

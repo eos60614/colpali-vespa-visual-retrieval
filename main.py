@@ -33,8 +33,10 @@ from vespa.application import Vespa
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.agent import run_agent
 from frontend.app import (
     AboutThisDemo,
+    AgentChatResult,
     ChatResult,
     Home,
     Search,
@@ -272,8 +274,8 @@ async def post(
 
 
 @rt("/search")
-def get(request, query: str = "", ranking: str = "hybrid"):
-    logger.info(f"/search: Fetching results for query: {query}, ranking: {ranking}")
+def get(request, query: str = "", ranking: str = "hybrid", mode: str = "oneshot"):
+    logger.info(f"/search: Fetching results for query: {query}, ranking: {ranking}, mode: {mode}")
 
     # Always render the SearchBox first
     if not query:
@@ -281,7 +283,7 @@ def get(request, query: str = "", ranking: str = "hybrid"):
         return Layout(
             Main(
                 Div(
-                    SearchBox(query_value=query, ranking_value=ranking),
+                    SearchBox(query_value=query, ranking_value=ranking, mode_value=mode),
                     Div(
                         P(
                             "No query provided. Please enter a query.",
@@ -295,18 +297,25 @@ def get(request, query: str = "", ranking: str = "hybrid"):
         )
     # Generate a unique query_id based on the query and ranking value
     query_id = generate_query_id(query, ranking)
+
+    # Choose the appropriate chat component based on mode
+    if mode == "agent":
+        chat_component = AgentChatResult(query=query)
+    else:
+        chat_component = ChatResult(query_id=query_id, query=query)
+
     # Show the loading message if a query is provided
     return Layout(
         Main(Search(request), data_overlayscrollbars_initialize=True, cls="border-t"),
         Aside(
-            ChatResult(query_id=query_id, query=query),
+            chat_component,
             cls="border-t border-l hidden md:block",
         ),
-    )  # Show SearchBox and Loading message initially
+    )
 
 
 @rt("/fetch_results")
-async def get(session, request, query: str, ranking: str, rerank: str = "true"):
+async def get(session, request, query: str, ranking: str, rerank: str = "true", mode: str = "oneshot"):
     if "hx-request" not in request.headers:
         return RedirectResponse("/search")
 
@@ -315,7 +324,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
 
     # Get the hash of the query and ranking value
     query_id = generate_query_id(query, ranking)
-    logger.info(f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}")
+    logger.info(f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}, mode: {mode}")
     # Run the embedding and query against Vespa app
     start_inference = time.perf_counter()
     q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
@@ -355,7 +364,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         idx_to_token=idx_to_token,
         doc_ids=[result["fields"]["id"] for result in search_results],
     )
-    return SearchResult(search_results, query, query_id, search_time, total_count)
+    return SearchResult(search_results, query, query_id, search_time, total_count, mode=mode)
 
 
 def get_results_children(result):
@@ -527,6 +536,18 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
 async def get_message(query_id: str, query: str, doc_ids: str):
     return StreamingResponse(
         message_generator(query_id=query_id, query=query, doc_ids=doc_ids.split(",")),
+        media_type="text/event-stream",
+    )
+
+
+@app.get("/get-agent-message")
+async def get_agent_message(query: str):
+    return StreamingResponse(
+        run_agent(
+            vespa_client=vespa_app,
+            sim_map_generator=app.sim_map_generator,
+            query=query,
+        ),
         media_type="text/event-stream",
     )
 
