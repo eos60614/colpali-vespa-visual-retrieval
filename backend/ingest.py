@@ -6,6 +6,8 @@ Extracts core functionality from scripts/feed_data.py for on-demand upload proce
 import base64
 import hashlib
 import io
+import json
+import logging
 import os
 import re
 from pathlib import Path
@@ -15,6 +17,14 @@ import fitz  # PyMuPDF
 import numpy as np
 from PIL import Image
 from vespa.application import Vespa
+
+from backend.drawing_regions import (
+    DetectedRegion,
+    detect_and_extract_regions,
+    should_detect_regions,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def validate_pdf(file_bytes: bytes) -> Tuple[bool, str]:
@@ -183,9 +193,15 @@ def ingest_pdf(
     description: str = "",
     tags: Optional[List[str]] = None,
     batch_size: int = 4,
+    detect_drawing_regions: bool = False,
+    use_vlm_detection: bool = False,
+    vlm_api_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
+
+    For large-format drawings, optionally detects sub-regions (elevations, details,
+    tables) and embeds each region separately for better ColPali patch coverage.
 
     Args:
         file_bytes: Raw PDF bytes
@@ -198,6 +214,9 @@ def ingest_pdf(
         description: Optional description
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
+        detect_drawing_regions: Enable region detection for large drawings
+        use_vlm_detection: Use VLM (Claude) for semantic region detection
+        vlm_api_key: API key for VLM detection (defaults to ANTHROPIC_API_KEY env var)
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -227,55 +246,132 @@ def ingest_pdf(
     if not images:
         return False, "PDF has no pages", 0
 
-    # Step 4: Generate embeddings
-    try:
-        embeddings = generate_embeddings(model, processor, images, device, batch_size)
-    except Exception as e:
-        return False, f"Error generating embeddings: {str(e)}", 0
+    # Step 4: Process pages (with optional region detection)
+    docs_indexed = 0
+    failed_docs = []
 
-    # Step 5: Create and feed documents
-    pages_indexed = 0
-    failed_pages = []
-
-    for page_num, (image, (binary_embedding, float_embedding)) in enumerate(zip(images, embeddings)):
+    for page_num, image in enumerate(images):
         page_text = texts[page_num] if page_num < len(texts) else ""
+        page_doc_id = f"{base_doc_id}_page_{page_num + 1}"
 
-        # Create snippet from first 200 chars of text or default
-        snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
-        if not snippet:
-            snippet = f"Page {page_num + 1} of {filename}"
+        # Determine if this page needs region detection
+        if detect_drawing_regions and should_detect_regions(image):
+            # Detect and extract regions for this large drawing page
+            region_results = detect_and_extract_regions(
+                image,
+                use_vlm=use_vlm_detection,
+                vlm_api_key=vlm_api_key,
+            )
+            logger.info(
+                f"Page {page_num + 1}: detected {len(region_results)} regions "
+                f"(image size: {image.size[0]}x{image.size[1]})"
+            )
 
-        doc_id = f"{base_doc_id}_page_{page_num + 1}"
+            # Generate embeddings for all region images
+            region_images = [r[0] for r in region_results]
+            try:
+                region_embeddings = generate_embeddings(
+                    model, processor, region_images, device, batch_size
+                )
+            except Exception as e:
+                failed_docs.append((page_doc_id, f"Embedding error: {e}"))
+                continue
 
-        doc = {
-            "id": doc_id,
-            "fields": {
-                "id": doc_id,
-                "url": filename,
-                "title": title,
-                "page_number": page_num + 1,
-                "text": page_text,
-                "snippet": snippet,
-                "description": description,
-                "tags": tags,
-                "blur_image": create_blur_image(image),
-                "full_image": image_to_base64(image),
-                "embedding": binary_embedding,
-                "embedding_float": float_embedding,
-                "questions": [],
-                "queries": [],
-            },
-        }
+            # Feed each region as a document
+            for region_idx, ((region_img, region_meta), (bin_emb, float_emb)) in enumerate(
+                zip(region_results, region_embeddings)
+            ):
+                is_full_page = region_meta.region_type == "full_page"
+                if is_full_page:
+                    doc_id = page_doc_id
+                else:
+                    doc_id = f"{page_doc_id}_region_{region_idx}"
 
-        _, success, error = feed_document(vespa_app, doc)
-        if success:
-            pages_indexed += 1
+                snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                if not snippet:
+                    snippet = f"Page {page_num + 1} of {filename}"
+                if not is_full_page and region_meta.label:
+                    snippet = f"[{region_meta.label}] {snippet}"
+
+                doc = {
+                    "id": doc_id,
+                    "fields": {
+                        "id": doc_id,
+                        "url": filename,
+                        "title": title,
+                        "page_number": page_num + 1,
+                        "text": page_text if is_full_page else "",
+                        "snippet": snippet,
+                        "description": description,
+                        "tags": tags,
+                        "blur_image": create_blur_image(region_img),
+                        "full_image": image_to_base64(region_img),
+                        "embedding": bin_emb,
+                        "embedding_float": float_emb,
+                        "questions": [],
+                        "queries": [],
+                        "is_region": not is_full_page,
+                        "parent_doc_id": page_doc_id if not is_full_page else "",
+                        "region_label": region_meta.label if not is_full_page else "",
+                        "region_type": region_meta.region_type,
+                        "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                    },
+                }
+
+                _, success, error = feed_document(vespa_app, doc)
+                if success:
+                    docs_indexed += 1
+                else:
+                    failed_docs.append((doc_id, error))
         else:
-            failed_pages.append((page_num + 1, error))
+            # Standard single-page processing (no region detection)
+            try:
+                embeddings = generate_embeddings(
+                    model, processor, [image], device, batch_size
+                )
+                bin_emb, float_emb = embeddings[0]
+            except Exception as e:
+                failed_docs.append((page_doc_id, f"Embedding error: {e}"))
+                continue
 
-    if pages_indexed == 0:
-        return False, f"Failed to index any pages. Errors: {failed_pages}", 0
-    elif failed_pages:
-        return True, f"Indexed {pages_indexed} pages. {len(failed_pages)} pages failed.", pages_indexed
+            snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+            if not snippet:
+                snippet = f"Page {page_num + 1} of {filename}"
+
+            doc = {
+                "id": page_doc_id,
+                "fields": {
+                    "id": page_doc_id,
+                    "url": filename,
+                    "title": title,
+                    "page_number": page_num + 1,
+                    "text": page_text,
+                    "snippet": snippet,
+                    "description": description,
+                    "tags": tags,
+                    "blur_image": create_blur_image(image),
+                    "full_image": image_to_base64(image),
+                    "embedding": bin_emb,
+                    "embedding_float": float_emb,
+                    "questions": [],
+                    "queries": [],
+                    "is_region": False,
+                    "parent_doc_id": "",
+                    "region_label": "",
+                    "region_type": "full_page",
+                    "region_bbox": "",
+                },
+            }
+
+            _, success, error = feed_document(vespa_app, doc)
+            if success:
+                docs_indexed += 1
+            else:
+                failed_docs.append((page_doc_id, error))
+
+    if docs_indexed == 0:
+        return False, f"Failed to index any documents. Errors: {failed_docs}", 0
+    elif failed_docs:
+        return True, f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.", docs_indexed
     else:
-        return True, f"Successfully indexed {pages_indexed} pages.", pages_indexed
+        return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed

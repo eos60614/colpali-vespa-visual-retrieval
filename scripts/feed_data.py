@@ -227,6 +227,16 @@ def main():
     parser.add_argument("--workers", type=int, default=4, help="Number of parallel workers for PDF processing")
     parser.add_argument("--feed-workers", type=int, default=10, help="Number of parallel workers for Vespa feeding")
     parser.add_argument("--batch-size", type=int, default=8, help="Batch size for embedding generation")
+    parser.add_argument(
+        "--detect-regions", action="store_true",
+        help="Enable AI region detection for large-format drawings. "
+             "Splits large pages into sub-regions for better ColPali patch coverage."
+    )
+    parser.add_argument(
+        "--use-vlm", action="store_true",
+        help="Use VLM (Claude) for semantic region labeling. "
+             "Requires ANTHROPIC_API_KEY. Falls back to heuristic detection if unavailable."
+    )
 
     args = parser.parse_args()
     load_dotenv()
@@ -288,6 +298,13 @@ def main():
 
     # Phase 2: Generate embeddings (GPU-bound, sequential per PDF but batched)
     print("\n[Phase 2] Generating ColPali embeddings...")
+    if args.detect_regions:
+        from backend.drawing_regions import detect_and_extract_regions, should_detect_regions
+        import json
+        print("  Region detection ENABLED for large-format drawings")
+        if args.use_vlm:
+            print("  VLM-based semantic labeling ENABLED")
+
     all_docs = []
 
     for pdf_path_str, (images, texts) in tqdm(pdf_data.items(), desc="Generating embeddings"):
@@ -296,35 +313,83 @@ def main():
         if not images:
             continue
 
-        # Generate embeddings in batches
-        embeddings = generate_embeddings(model, processor, images, device, batch_size=args.batch_size)
-
-        for page_num, (image, (binary_embedding, float_embedding)) in enumerate(zip(images, embeddings)):
-            doc_id = f"{pdf_path.stem}_page_{page_num + 1}"
-            # Get text for this page (if available)
+        for page_num, image in enumerate(images):
             page_text = texts[page_num] if page_num < len(texts) else ""
-            # Create snippet from first 200 chars of text or default
-            snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
-            if not snippet:
-                snippet = f"Page {page_num + 1} of {pdf_path.name}"
+            page_doc_id = f"{pdf_path.stem}_page_{page_num + 1}"
 
-            all_docs.append({
-                "id": doc_id,
-                "fields": {
-                    "id": doc_id,
-                    "url": str(pdf_path),
-                    "title": pdf_path.stem,
-                    "page_number": page_num + 1,
-                    "text": page_text,
-                    "snippet": snippet,
-                    "blur_image": create_blur_image(image),
-                    "full_image": image_to_base64(image),
-                    "embedding": binary_embedding,
-                    "embedding_float": float_embedding,
-                    "questions": [],
-                    "queries": [],
-                },
-            })
+            if args.detect_regions and should_detect_regions(image):
+                # Detect regions for this large drawing
+                region_results = detect_and_extract_regions(
+                    image,
+                    use_vlm=args.use_vlm,
+                )
+                region_images = [r[0] for r in region_results]
+                embeddings = generate_embeddings(
+                    model, processor, region_images, device, batch_size=args.batch_size
+                )
+
+                for region_idx, ((region_img, region_meta), (bin_emb, float_emb)) in enumerate(
+                    zip(region_results, embeddings)
+                ):
+                    is_full_page = region_meta.region_type == "full_page"
+                    doc_id = page_doc_id if is_full_page else f"{page_doc_id}_region_{region_idx}"
+
+                    snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                    if not snippet:
+                        snippet = f"Page {page_num + 1} of {pdf_path.name}"
+                    if not is_full_page and region_meta.label:
+                        snippet = f"[{region_meta.label}] {snippet}"
+
+                    all_docs.append({
+                        "id": doc_id,
+                        "fields": {
+                            "id": doc_id,
+                            "url": str(pdf_path),
+                            "title": pdf_path.stem,
+                            "page_number": page_num + 1,
+                            "text": page_text if is_full_page else "",
+                            "snippet": snippet,
+                            "blur_image": create_blur_image(region_img),
+                            "full_image": image_to_base64(region_img),
+                            "embedding": bin_emb,
+                            "embedding_float": float_emb,
+                            "questions": [],
+                            "queries": [],
+                            "is_region": not is_full_page,
+                            "parent_doc_id": page_doc_id if not is_full_page else "",
+                            "region_label": region_meta.label if not is_full_page else "",
+                            "region_type": region_meta.region_type,
+                            "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                        },
+                    })
+            else:
+                # Standard single-page embedding
+                embeddings = generate_embeddings(
+                    model, processor, [image], device, batch_size=args.batch_size
+                )
+                bin_emb, float_emb = embeddings[0]
+
+                snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                if not snippet:
+                    snippet = f"Page {page_num + 1} of {pdf_path.name}"
+
+                all_docs.append({
+                    "id": page_doc_id,
+                    "fields": {
+                        "id": page_doc_id,
+                        "url": str(pdf_path),
+                        "title": pdf_path.stem,
+                        "page_number": page_num + 1,
+                        "text": page_text,
+                        "snippet": snippet,
+                        "blur_image": create_blur_image(image),
+                        "full_image": image_to_base64(image),
+                        "embedding": bin_emb,
+                        "embedding_float": float_emb,
+                        "questions": [],
+                        "queries": [],
+                    },
+                })
 
     print(f"Generated embeddings for {len(all_docs)} pages")
 
