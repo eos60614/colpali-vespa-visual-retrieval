@@ -27,8 +27,12 @@ MIN_REGION_SIZE = 200
 # Minimum pixel area for a region to be considered meaningful
 MIN_REGION_AREA = 100_000
 # Page size threshold (pixels) above which region detection activates
-# At 150 DPI, a 24"x18" drawing is 3600x2700. We trigger above that.
-LARGE_PAGE_THRESHOLD = 3000 * 2000
+# At 150 DPI:
+#   - Letter (8.5x11): 1275x1650 = 2.1M pixels (excluded)
+#   - Tabloid (11x17): 1650x2550 = 4.2M pixels (included)
+#   - ARCH D (24x36): 3600x5400 = 19.4M pixels (included)
+#   - Large format (40x32): 6000x4800 = 28.8M pixels (included)
+LARGE_PAGE_THRESHOLD = 1400 * 2000  # ~2.8M pixels - includes 11x17 and above
 # Overlap in pixels between adjacent tiles in the grid fallback
 TILE_OVERLAP = 100
 # Maximum regions to extract from a single page
