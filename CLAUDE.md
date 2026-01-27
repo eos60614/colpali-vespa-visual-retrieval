@@ -33,12 +33,28 @@ pytest -k "test_ingest" tests/                    # Run tests matching pattern
 # Linting
 ruff check .                                      # Lint
 ruff check --fix .                                # Auto-fix
+ruff format .                                     # Format code
 
 # Database ingestion (Procore PostgreSQL)
 python scripts/ingest_database.py --full          # Full ingestion
 python scripts/ingest_database.py --incremental   # Incremental sync
 python scripts/sync_database.py --daemon          # Continuous sync daemon
 ```
+
+### Slash Commands
+
+Development slash commands are defined in `.claude/commands/`. Key ones:
+
+- **`/check`** — Run full code quality checks (lint + tests), fail-fast, logs to `logs/check.log`
+- **`/lint`** — Run ruff linter with full context, logs to `logs/lint.log`
+- **`/lint-fix`** — Auto-fix linting issues with `ruff check --fix` + `ruff format`, logs to `logs/lint-fix.log`
+- **`/test`** — Run pytest with `-v -x --tb=short`, supports `-k` pattern matching, logs to `logs/test.log`
+- **`/server`** — Start FastHTML dev server in background (port 7860), pre-flight checks for Vespa/port availability, logs to `logs/server.log`
+- **`/debug`** — Search git branches for existing fixes to similar issues
+
+All slash commands detect and activate the virtual environment (`venv/`, `.venv/`, or `env/`), log output to `logs/`, and use the Read tool to check results (preserving context window).
+
+SpecKit workflow commands (`/speckit.*`) are also available for feature specification and planning. Feature specs live in the `specs/` directory.
 
 ## Architecture
 
@@ -68,6 +84,8 @@ Browser → HTMX requests → FastHTML (main.py)
 **`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
 **`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events. **Note:** imports from `backend.llm_config` which does not yet exist — this module needs to be created to extract LLM config functions from main.py.
+
+**`backend/models/config.py`** — Model registry. Two models defined: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
 
 **`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
@@ -115,9 +133,18 @@ Chat model set via `CHAT_MODEL` env var (default: `google/gemini-2.5-flash`).
 - Logging via stdlib `logging` (not loguru). Environment config via `python-dotenv`.
 - No ORM — raw asyncpg with parameterized queries for Procore DB.
 - Vespa documents fed via pyvespa client library.
-- Git LFS for large binaries — see `.gitattributes`.
+- Git LFS for large binaries (model weights, `tailwindcss` binary, demo images) — see `.gitattributes`.
 - Frontend components are PascalCase functions; backend helpers are snake_case.
 - FastHTML routes use `@rt()` decorator for GET/POST, `@app.get()` for explicit GET.
+- Tailwind CSS compiled via `tailwindcss` binary (Git LFS tracked). Config in `tailwind.config.js` references shad4fast components from venv.
+- No CI/CD pipelines — testing and linting run via slash commands or manually.
+
+### Testing Conventions
+
+- pytest with pytest-asyncio for async tests.
+- Preferred flags: `pytest -v -x --tb=short` (verbose, fail on first error, short tracebacks).
+- `tests/conftest.py` provides shared fixtures: `mock_vespa_client`, `mock_db_connection`, `sample_record`, `sample_table_columns`, `sample_jsonb_attachments`, `test_data_dir`, `database_url`, `vespa_url`.
+- Integration tests require running Vespa and/or database services.
 
 ## Environment Variables
 
