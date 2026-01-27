@@ -234,8 +234,9 @@ def main():
     )
     parser.add_argument(
         "--use-vlm", action="store_true",
-        help="Use VLM (Claude) for semantic region labeling. "
-             "Requires ANTHROPIC_API_KEY. Falls back to heuristic detection if unavailable."
+        help="Use VLM for semantic region labeling via OpenRouter/OpenAI/Ollama. "
+             "Requires OPENROUTER_API_KEY or OPENAI_API_KEY (not needed for Ollama). "
+             "Falls back to heuristic detection if unavailable."
     )
 
     args = parser.parse_args()

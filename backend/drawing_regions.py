@@ -271,31 +271,47 @@ def _generate_tiles(
 def detect_regions_vlm(
     image: Image.Image,
     api_key: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "anthropic/claude-sonnet-4",
+    base_url: Optional[str] = None,
 ) -> List[DetectedRegion]:
     """
     Use a vision-language model to identify semantic regions in a drawing.
 
-    Sends the image to Claude and asks it to identify distinct drawing regions
+    Sends the image to a VLM through an OpenAI-compatible API (OpenRouter,
+    OpenAI, or local Ollama) and asks it to identify distinct drawing regions
     with bounding boxes and labels.
 
     Args:
         image: PIL Image (full drawing page)
-        api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-        model: Model to use for detection
+        api_key: API key (checks OPENROUTER_API_KEY then OPENAI_API_KEY; not needed for Ollama)
+        model: Model identifier to use for detection
+        base_url: API base URL (defaults to LLM_BASE_URL env var, then OpenRouter)
 
     Returns:
         List of DetectedRegion objects with semantic labels
     """
     try:
-        import anthropic
+        import httpx
     except ImportError:
-        logger.warning("anthropic package not installed, falling back to heuristic detection")
+        logger.warning("httpx package not installed, falling back to heuristic detection")
         return detect_regions_heuristic(image)
 
-    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        logger.warning("No ANTHROPIC_API_KEY set, falling back to heuristic detection")
+        api_key = openrouter_key or openai_key or ""
+    if not base_url:
+        explicit_base = os.environ.get("LLM_BASE_URL")
+        if explicit_base:
+            base_url = explicit_base
+        elif openai_key and not openrouter_key:
+            base_url = "https://api.openai.com/v1"
+        else:
+            base_url = "https://openrouter.ai/api/v1"
+
+    is_remote = "openrouter.ai" in base_url or "openai.com" in base_url
+    if is_remote and not api_key:
+        logger.warning("No API key set (checked OPENROUTER_API_KEY, OPENAI_API_KEY), falling back to heuristic detection")
         return detect_regions_heuristic(image)
 
     w, h = image.size
@@ -338,28 +354,36 @@ Rules:
 - Maximum {MAX_REGIONS} regions"""
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
-            model=model,
-            max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": "image/jpeg",
-                            "data": image_b64,
-                        },
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }],
-        )
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
-        # Parse the JSON response
-        response_text = response.content[0].text.strip()
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "max_tokens": 2000,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}",
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        # Parse the JSON response (OpenAI-compatible format)
+        response_text = result["choices"][0]["message"]["content"].strip()
         # Handle potential markdown code fences
         if response_text.startswith("```"):
             response_text = response_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()

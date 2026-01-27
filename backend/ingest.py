@@ -215,8 +215,8 @@ def ingest_pdf(
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
         detect_drawing_regions: Enable region detection for large drawings
-        use_vlm_detection: Use VLM (Claude) for semantic region detection
-        vlm_api_key: API key for VLM detection (defaults to ANTHROPIC_API_KEY env var)
+        use_vlm_detection: Use VLM for semantic region detection (via OpenRouter/OpenAI/Ollama)
+        vlm_api_key: API key for VLM detection (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
 
     Returns:
         Tuple of (success, message, pages_indexed)

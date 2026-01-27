@@ -1,5 +1,7 @@
 import asyncio
 import base64
+import io
+import json
 import os
 import time
 import uuid
@@ -8,7 +10,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import google.generativeai as genai
+import httpx
 from fastcore.parallel import threaded
 from fasthtml.common import (
     Aside,
@@ -111,19 +113,33 @@ app, rt = fast_app(
 )
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
-# Gemini config
+# Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-GEMINI_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images. 
+def _resolve_llm_config():
+    """Resolve LLM base URL and API key from environment variables."""
+    explicit_base = os.getenv("LLM_BASE_URL")
+    openrouter_key = os.getenv("OPENROUTER_API_KEY")
+    openai_key = os.getenv("OPENAI_API_KEY")
+
+    if explicit_base:
+        base_url = explicit_base
+    elif openai_key and not openrouter_key:
+        base_url = "https://api.openai.com/v1"
+    else:
+        base_url = "https://openrouter.ai/api/v1"
+
+    api_key = openrouter_key or openai_key or ""
+    return base_url, api_key
+
+LLM_BASE_URL, LLM_API_KEY = _resolve_llm_config()
+CHAT_MODEL = os.getenv("CHAT_MODEL", "google/gemini-2.5-flash")
+CHAT_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images.
 If the user query can not be interpreted as a question, or if the answer to the query can not be inferred from the images,
 answer with the exact phrase "I am sorry, I can't find enough relevant information on these pages to answer your question.".
 Your response should be HTML formatted, but only simple tags, such as <b>. <p>, <i>, <br> <ul> and <li> are allowed. No HTML tables.
 This means that newlines will be replaced with <br> tags, bold text will be enclosed in <b> tags, and so on.
 Do NOT include backticks (`) in your response. Only simple HTML tags and text.
 """
-gemini_model = genai.GenerativeModel(
-    "gemini-2.5-flash", system_instruction=GEMINI_SYSTEM_PROMPT
-)
 STATIC_DIR = Path("static")
 IMG_DIR = STATIC_DIR / "full_images"
 SIM_MAP_DIR = STATIC_DIR / "sim_maps"
@@ -510,7 +526,13 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
     if not images:
-        yield "event: message\ndata: Failed to send images to Gemini 2.5!\n\n"
+        yield "event: message\ndata: Failed to load images for AI chat!\n\n"
+        yield "event: close\ndata: \n\n"
+        return
+
+    is_remote = "openrouter.ai" in LLM_BASE_URL or LLM_API_KEY
+    if is_remote and not LLM_API_KEY:
+        yield "event: message\ndata: No OPENROUTER_API_KEY configured. AI chat is unavailable.\n\n"
         yield "event: close\ndata: \n\n"
         return
 
@@ -518,15 +540,58 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     def replace_newline_with_br(text):
         return text.replace("\n", "<br>")
 
+    # Build image content blocks for OpenAI-compatible vision API
+    content_parts = []
+    for img in images:
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+        })
+    content_parts.append({"type": "text", "text": f"\n\n Query: {query}"})
+
+    headers = {"Content-Type": "application/json"}
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+
     response_text = ""
-    async for chunk in await gemini_model.generate_content_async(
-        images + ["\n\n Query: ", query], stream=True
-    ):
-        if chunk.text:
-            response_text += chunk.text
-            response_text = replace_newline_with_br(response_text)
-            yield f"event: message\ndata: {response_text}\n\n"
-            await asyncio.sleep(0.1)
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream(
+                "POST",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers=headers,
+                json={
+                    "model": CHAT_MODEL,
+                    "stream": True,
+                    "messages": [
+                        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                        {"role": "user", "content": content_parts},
+                    ],
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+                        text = delta.get("content", "")
+                        if text:
+                            response_text += text
+                            yield f"event: message\ndata: {replace_newline_with_br(response_text)}\n\n"
+                            await asyncio.sleep(0.1)
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+    except Exception as e:
+        logger.error(f"Chat LLM streaming failed: {e}")
+        yield f"event: message\ndata: Error generating AI response.\n\n"
     yield "event: close\ndata: \n\n"
 
 
