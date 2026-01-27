@@ -82,6 +82,14 @@ schema pdf_page {
         field region_bbox type string {
             indexing: summary | attribute
         }
+        field project_id type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field category type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
     }
 
     fieldset default {

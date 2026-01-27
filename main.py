@@ -32,9 +32,14 @@ from PIL import Image
 from shad4fast import ShadHead
 from vespa.application import Vespa
 
+from starlette.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
+
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.project_store import ProjectStore
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -111,7 +116,16 @@ app, rt = fast_app(
         ShadHead(tw_cdn=False, theme_handle=True),
     ),
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 vespa_app: Vespa = VespaQueryClient(logger=logger)
+project_store = ProjectStore()
 thread_pool = ThreadPoolExecutor()
 # Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
 
@@ -606,6 +620,369 @@ async def get_message(query_id: str, query: str, doc_ids: str):
 @rt("/app")
 def get():
     return Layout(Main(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4")))
+
+
+# ── JSON API Routes ─────────────────────────────────────────────────────────
+
+
+def _build_yql_filter(project_id: int = 0, categories: list = None, document_ids: list = None) -> str:
+    """Build a YQL filter clause from project/category/document filters."""
+    parts = []
+    if project_id:
+        parts.append(f"project_id = {int(project_id)}")
+    if categories:
+        cat_clauses = " or ".join(f'category = "{c}"' for c in categories)
+        parts.append(f"({cat_clauses})")
+    if document_ids:
+        id_clauses = " or ".join(f'id contains "{did}"' for did in document_ids)
+        parts.append(f"({id_clauses})")
+    return " and ".join(parts)
+
+
+@app.post("/api/search")
+async def api_search(request: Request):
+    """JSON search endpoint for the Next.js frontend."""
+    body = await request.json()
+    query = body.get("query", "").strip()
+    if not query:
+        return JSONResponse({"error": "query is required"}, status_code=400)
+
+    project_id = body.get("project_id", 0)
+    categories = body.get("categories", [])
+    document_ids = body.get("document_ids", [])
+    ranking = body.get("ranking", "hybrid")
+    do_rerank = body.get("rerank", True)
+
+    extra_yql_filter = _build_yql_filter(project_id, categories, document_ids)
+
+    query_id = str(generate_query_id(query, ranking))
+
+    start_inference = time.perf_counter()
+    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(query)
+    end_inference = time.perf_counter()
+    logger.info(f"API search inference: {end_inference - start_inference:.2f}s")
+
+    start = time.perf_counter()
+    result = await vespa_app.get_result_from_query(
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        rerank=do_rerank,
+        rerank_hits=20,
+        final_hits=3,
+        extra_yql_filter=extra_yql_filter,
+    )
+    end = time.perf_counter()
+    search_time_ms = int((end - start) * 1000)
+
+    total_count = result.get("root", {}).get("fields", {}).get("totalCount", 0)
+    children = result.get("root", {}).get("children", [])
+
+    # Build sim map tokens list (non-filtered tokens)
+    sim_map_tokens = [
+        token for idx, token in idx_to_token.items()
+        if not SimMapGenerator.should_filter_token(token)
+    ]
+
+    results_json = []
+    doc_ids_for_sim = []
+    for child in children:
+        fields = child.get("fields", {})
+        doc_id = fields.get("id", "")
+        doc_ids_for_sim.append(doc_id)
+        results_json.append({
+            "doc_id": doc_id,
+            "title": fields.get("title", ""),
+            "page_number": fields.get("page_number", 0),
+            "snippet": fields.get("snippet", ""),
+            "text": fields.get("text", ""),
+            "blur_image_url": f"/api/images/{doc_id}/blur",
+            "full_image_url": f"/api/images/{doc_id}/full",
+            "relevance_score": child.get("relevance", 0),
+            "category": fields.get("category", ""),
+            "is_region": fields.get("is_region", False),
+            "sim_map_tokens": sim_map_tokens,
+        })
+
+    # Kick off background sim map generation
+    if doc_ids_for_sim:
+        get_and_store_sim_maps(
+            query_id=query_id,
+            query=query,
+            q_embs=q_embs,
+            ranking=ranking,
+            idx_to_token=idx_to_token,
+            doc_ids=doc_ids_for_sim,
+        )
+
+    return JSONResponse({
+        "query_id": query_id,
+        "results": results_json,
+        "total_count": total_count,
+        "search_time_ms": search_time_ms,
+    })
+
+
+@app.get("/api/projects")
+async def api_list_projects():
+    """List all active Procore projects with per-category document counts."""
+    projects = project_store.list_projects()
+    return JSONResponse({"projects": projects})
+
+
+@app.get("/api/projects/{project_id}")
+async def api_get_project(project_id: int):
+    """Get a single Procore project by ID."""
+    project = project_store.get_project(project_id)
+    if not project:
+        return JSONResponse({"error": "project not found"}, status_code=404)
+    return JSONResponse(project)
+
+
+@app.get("/api/projects/{project_id}/documents")
+async def api_list_documents(request: Request, project_id: int):
+    """List documents for a project, optionally filtered by category or search term."""
+    params = request.query_params
+    category = params.get("category", "")
+    search_term = params.get("search", "")
+    page = int(params.get("page", "1"))
+    page_size = int(params.get("page_size", "20"))
+
+    # Build YQL for document listing (BM25-only, no embeddings needed)
+    filter_parts = [f"project_id = {int(project_id)}"]
+    if category:
+        filter_parts.append(f'category = "{category}"')
+
+    yql_filter = " and ".join(filter_parts)
+    yql_where = f"userQuery() and {yql_filter}" if search_term else yql_filter
+
+    async with vespa_app.app.asyncio(connections=1) as session:
+        body = {
+            "yql": f"select id,title,url,page_number,category,snippet,tags from pdf_page where {yql_where} | all(group(url) each(output(count())) each(max(1) each(output(summary()))))",
+            "ranking": "bm25" if search_term else "unranked",
+            "hits": page_size,
+            "offset": (page - 1) * page_size,
+            "timeout": "10s",
+            "presentation.timing": True,
+        }
+        if search_term:
+            body["query"] = search_term
+        response = await session.query(body=body)
+
+    if not response.is_successful():
+        return JSONResponse({"error": "query failed"}, status_code=500)
+
+    children = response.json.get("root", {}).get("children", [])
+    total = response.json.get("root", {}).get("fields", {}).get("totalCount", 0)
+
+    documents = []
+    for child in children:
+        fields = child.get("fields", {})
+        documents.append({
+            "doc_id": fields.get("id", ""),
+            "title": fields.get("title", ""),
+            "category": fields.get("category", ""),
+            "page_number": fields.get("page_number", 0),
+            "tags": fields.get("tags", []),
+        })
+
+    return JSONResponse({"documents": documents, "total": total})
+
+
+@app.post("/api/projects/{project_id}/upload")
+async def api_upload_document(request: Request, project_id: int):
+    """Upload a PDF to a specific project via JSON API."""
+    form = await request.form()
+    pdf_file = form.get("pdf_file")
+    if pdf_file is None:
+        return JSONResponse({"error": "pdf_file is required"}, status_code=400)
+
+    file_bytes = await pdf_file.read()
+    if len(file_bytes) > MAX_FILE_SIZE:
+        return JSONResponse({"error": "File exceeds 250MB size limit"}, status_code=400)
+    if not pdf_file.filename.lower().endswith(".pdf"):
+        return JSONResponse({"error": "Only PDF files are accepted"}, status_code=400)
+
+    is_valid, validation_msg = validate_pdf(file_bytes)
+    if not is_valid:
+        return JSONResponse({"error": validation_msg}, status_code=400)
+
+    title = form.get("title", "")
+    description = form.get("description", "")
+    tags_str = form.get("tags", "")
+    category = form.get("category", "")
+    tag_list = [t.strip() for t in tags_str.split(",") if t.strip()] if tags_str else []
+
+    sim_map_gen = app.sim_map_generator
+    vespa = vespa_app.app
+
+    try:
+        success, message, pages_indexed = ingest_pdf(
+            file_bytes=file_bytes,
+            filename=pdf_file.filename,
+            vespa_app=vespa,
+            model=sim_map_gen.model,
+            processor=sim_map_gen.processor,
+            device=sim_map_gen.device,
+            title=title if title.strip() else None,
+            description=description,
+            tags=tag_list,
+            project_id=project_id,
+            category=category,
+        )
+    except Exception as e:
+        logger.error(f"API upload error: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    if success:
+        return JSONResponse({"success": True, "message": message, "pages_indexed": pages_indexed})
+    else:
+        return JSONResponse({"error": message}, status_code=500)
+
+
+@app.get("/api/chat")
+async def api_chat(query_id: str, query: str, doc_ids: str):
+    """SSE chat endpoint for the Next.js frontend.
+    Emits JSON events: event:token data:{"content":"...","done":false}
+    """
+    async def json_message_generator():
+        images = []
+        num_images = 3
+        max_wait = 10
+        start_time = time.time()
+        id_list = doc_ids.split(",") if doc_ids else []
+
+        while (
+            len(images) < min(num_images, len(id_list))
+            and time.time() - start_time < max_wait
+        ):
+            images = []
+            for idx in range(min(num_images, len(id_list))):
+                image_filename = IMG_DIR / f"{id_list[idx]}.jpg"
+                if os.path.exists(image_filename):
+                    images.append(Image.open(image_filename))
+            if len(images) < min(num_images, len(id_list)):
+                await asyncio.sleep(0.2)
+
+        if not images:
+            yield f'event: token\ndata: {json.dumps({"content": "Failed to load images for AI chat.", "done": True})}\n\n'
+            return
+
+        is_remote = "openrouter.ai" in LLM_BASE_URL or LLM_API_KEY
+        if is_remote and not LLM_API_KEY:
+            yield f'event: token\ndata: {json.dumps({"content": "No API key configured. AI chat is unavailable.", "done": True})}\n\n'
+            return
+
+        content_parts = []
+        for img in images:
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+        content_parts.append({"type": "text", "text": f"\n\n Query: {query}"})
+
+        headers = {"Content-Type": "application/json"}
+        if LLM_API_KEY:
+            headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+
+        response_text = ""
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                async with client.stream(
+                    "POST",
+                    f"{LLM_BASE_URL}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": CHAT_MODEL,
+                        "stream": True,
+                        "messages": [
+                            {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                            {"role": "user", "content": content_parts},
+                        ],
+                    },
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[len("data: "):]
+                        if data.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            delta = chunk["choices"][0].get("delta", {})
+                            text = delta.get("content", "")
+                            if text:
+                                response_text += text
+                                yield f'event: token\ndata: {json.dumps({"content": response_text, "done": False})}\n\n'
+                        except (json.JSONDecodeError, KeyError, IndexError):
+                            continue
+        except Exception as e:
+            logger.error(f"API chat streaming failed: {e}")
+            yield f'event: token\ndata: {json.dumps({"content": "Error generating AI response.", "done": True})}\n\n'
+            return
+
+        yield f'event: done\ndata: {json.dumps({"content": response_text, "done": True})}\n\n'
+
+    return StreamingResponse(json_message_generator(), media_type="text/event-stream")
+
+
+@app.get("/api/images/{doc_id}/full")
+async def api_full_image(doc_id: str):
+    """Return full-res JPEG for a document page."""
+    img_path = IMG_DIR / f"{doc_id}.jpg"
+    if not os.path.exists(img_path):
+        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
+        with open(img_path, "wb") as f:
+            f.write(base64.b64decode(image_data))
+    return FileResponse(str(img_path), media_type="image/jpeg")
+
+
+@app.get("/api/images/{doc_id}/blur")
+async def api_blur_image(doc_id: str):
+    """Return blur preview JPEG for a document page."""
+    # Fetch from Vespa (blur_image is stored inline)
+    async with vespa_app.app.asyncio(connections=1) as session:
+        response = await session.query(
+            body={
+                "yql": f'select blur_image from pdf_page where id contains "{doc_id}"',
+                "ranking": "unranked",
+                "hits": 1,
+            },
+        )
+    if not response.is_successful():
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    children = response.json.get("root", {}).get("children", [])
+    if not children:
+        return JSONResponse({"error": "not found"}, status_code=404)
+
+    blur_b64 = children[0]["fields"]["blur_image"]
+    blur_bytes = base64.b64decode(blur_b64)
+    return Response(content=blur_bytes, media_type="image/jpeg")
+
+
+@app.get("/api/sim-maps/{query_id}/{idx}/{token_idx}")
+async def api_sim_map(query_id: str, idx: int, token_idx: int):
+    """Return similarity map PNG (404 if not ready yet)."""
+    sim_map_path = SIM_MAP_DIR / f"{query_id}_{idx}_{token_idx}.png"
+    if not os.path.exists(sim_map_path):
+        return JSONResponse({"error": "not ready"}, status_code=404)
+    return FileResponse(str(sim_map_path), media_type="image/png")
+
+
+@app.get("/api/suggestions")
+async def api_suggestions(query: str = "", project_id: int = 0):
+    """Return search suggestions as JSON."""
+    query = query.lower().strip()
+    if query:
+        suggestions = await vespa_app.get_suggestions(query)
+        return JSONResponse({"suggestions": suggestions})
+    return JSONResponse({"suggestions": []})
 
 
 if __name__ == "__main__":

@@ -15,8 +15,8 @@ import logging
 class VespaQueryClient:
     MAX_QUERY_TERMS = 64
     VESPA_SCHEMA_NAME = "pdf_page"
-    SELECT_FIELDS = "id,title,url,blur_image,page_number,snippet,text"
-    SELECT_FIELDS_WITH_EMBEDDING = "id,title,url,blur_image,page_number,snippet,text,embedding_float"
+    SELECT_FIELDS = "id,title,url,blur_image,page_number,snippet,text,project_id,category"
+    SELECT_FIELDS_WITH_EMBEDDING = "id,title,url,blur_image,page_number,snippet,text,embedding_float,project_id,category"
 
     def __init__(self, logger: logging.Logger):
         """
@@ -125,6 +125,7 @@ class VespaQueryClient:
         hits: int = 3,
         timeout: str = "10s",
         sim_map: bool = False,
+        extra_yql_filter: str = "",
         **kwargs,
     ) -> dict:
         """
@@ -147,7 +148,9 @@ class VespaQueryClient:
             response: VespaQueryResponse = await session.query(
                 body={
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where userQuery();"
+                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where userQuery()"
+                        + (f" and {extra_yql_filter}" if extra_yql_filter else "")
+                        + ";"
                     ),
                     "ranking": self.get_rank_profile("bm25", sim_map),
                     "query": query,
@@ -236,6 +239,7 @@ class VespaQueryClient:
         rerank: bool = False,
         rerank_hits: int = 20,
         final_hits: int = 3,
+        extra_yql_filter: str = "",
     ) -> Dict[str, Any]:
         """
         Get query results from Vespa based on the ranking method.
@@ -271,6 +275,7 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                extra_yql_filter=extra_yql_filter,
             )
         elif rank_method == "hybrid":  # Hybrid ColPali+BM25
             result = await self.query_vespa_colpali(
@@ -280,9 +285,10 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                extra_yql_filter=extra_yql_filter,
             )
         elif rank_method == "bm25":
-            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map, hits=hits_to_fetch)
+            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map, hits=hits_to_fetch, extra_yql_filter=extra_yql_filter)
         else:
             raise ValueError(f"Unsupported ranking: {rank_method}")
 
@@ -437,6 +443,7 @@ class VespaQueryClient:
         timeout: str = "10s",
         sim_map: bool = False,
         include_embedding: bool = False,
+        extra_yql_filter: str = "",
         **kwargs,
     ) -> dict:
         """
@@ -476,7 +483,8 @@ class VespaQueryClient:
                     **query_tensors,
                     "presentation.timing": True,
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {nn_string} or userQuery()"
+                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where ({nn_string} or userQuery())"
+                        + (f" and {extra_yql_filter}" if extra_yql_filter else "")
                     ),
                     "ranking.profile": self.get_rank_profile(
                         ranking=ranking, sim_map=sim_map

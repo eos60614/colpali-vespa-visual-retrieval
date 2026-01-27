@@ -196,6 +196,8 @@ def ingest_pdf(
     detect_drawing_regions: bool = False,
     use_vlm_detection: bool = False,
     vlm_api_key: Optional[str] = None,
+    project_id: int = 0,
+    category: str = "",
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -217,6 +219,8 @@ def ingest_pdf(
         detect_drawing_regions: Enable region detection for large drawings
         use_vlm_detection: Use VLM for semantic region detection (via OpenRouter/OpenAI/Ollama)
         vlm_api_key: API key for VLM detection (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
+        project_id: Project ID to associate with all pages (0 = unassigned)
+        category: Document category (e.g., "Drawing", "Spec", "RFI")
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -315,6 +319,8 @@ def ingest_pdf(
                         "region_label": region_meta.label if not is_full_page else "",
                         "region_type": region_meta.region_type,
                         "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                        "project_id": project_id,
+                        "category": category,
                     },
                 }
 
@@ -360,6 +366,8 @@ def ingest_pdf(
                     "region_label": "",
                     "region_type": "full_page",
                     "region_bbox": "",
+                    "project_id": project_id,
+                    "category": category,
                 },
             }
 
