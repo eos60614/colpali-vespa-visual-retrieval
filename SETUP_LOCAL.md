@@ -102,8 +102,8 @@ Run the setup script to automate steps 1-2:
 │                    FastHTML Application                      │
 │                        (main.py)                             │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
-│  │   ColPali    │  │   Vespa      │  │   Gemini     │       │
-│  │   Embeddings │  │   Client     │  │   (optional) │       │
+│  │   ColPali    │  │   Vespa      │  │  OpenRouter/ │       │
+│  │   Embeddings │  │   Client     │  │  Ollama(opt) │       │
 │  └──────────────┘  └──────────────┘  └──────────────┘       │
 └─────────────────────────────────────────────────────────────┘
                               │

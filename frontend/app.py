@@ -410,8 +410,8 @@ def AboutThisDemo():
                 "Also built with FastHTML. Handles query embedding inference using ColPali, serves static files, and is responsible for orchestrating interactions between Vespa and the frontend.",
             ),
             Li(
-                Strong("Gemini API: "),
-                "VLM for the AI response, providing responses based on the top results from Vespa.",
+                Strong("OpenRouter API: "),
+                "VLM for the AI response (via OpenRouter), providing responses based on the top results from Vespa.",
                 cls="list-disc list-inside",
             ),
             H2("User Experience Highlights", cls="text-2xl font-semibold"),
@@ -757,7 +757,7 @@ def ChatResult(query_id: str, query: str, doc_ids: Optional[list] = None):
         )
 
     return Div(
-        Div("AI-response (Gemini-2.5)", cls="text-xl font-semibold p-5"),
+        Div("AI-response", cls="text-xl font-semibold p-5"),
         Div(
             Div(
                 messages,
