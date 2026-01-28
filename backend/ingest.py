@@ -219,6 +219,7 @@ def ingest_pdf(
     use_vlm_detection: bool = False,
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
+    s3_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -349,6 +350,7 @@ def ingest_pdf(
                             "region_label": region_meta.label if not is_full_page else "",
                             "region_type": region_meta.region_type,
                             "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                            "s3_key": s3_key or "",
                         },
                     }
 
@@ -394,6 +396,7 @@ def ingest_pdf(
                         "region_label": "",
                         "region_type": "full_page",
                         "region_bbox": "",
+                        "s3_key": s3_key or "",
                     },
                 }
 

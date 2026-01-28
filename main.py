@@ -37,6 +37,7 @@ from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.s3 import generate_presigned_url
 from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
 from frontend.app import (
     AboutThisDemo,
@@ -730,6 +731,7 @@ async def api_search(request):
             "blur_image": fields.get("blur_image", ""),
             "relevance": relevance,
             "url": fields.get("url", ""),
+            "has_original_pdf": bool(fields.get("s3_key", "")),
         })
 
     return JSONResponse({
@@ -755,6 +757,98 @@ async def api_full_image(doc_id: str):
         with open(img_path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
     return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
+
+
+@rt("/download_pdf")
+async def get(doc_id: str = ""):
+    """Redirect to a presigned S3 URL for the original PDF.
+
+    Looks up the s3_key stored in Vespa for the given doc_id, generates a
+    temporary presigned download URL, and returns a 302 redirect so the
+    browser downloads directly from S3.
+    """
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    # Query Vespa for the document's s3_key
+    try:
+        schema = get("vespa", "schema_name")
+        connection_count = get("vespa", "connection_count")
+        async with vespa_app.app.asyncio(connections=connection_count) as session:
+            response = await session.query(
+                body={
+                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "hits": 1,
+                },
+            )
+            if not response.is_successful():
+                logger.error(f"Vespa query failed for doc_id={doc_id}: {response.json}")
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            children = response.json.get("root", {}).get("children", [])
+            if not children:
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            s3_key = children[0].get("fields", {}).get("s3_key", "")
+            if not s3_key:
+                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
+
+    # Generate presigned URL and redirect
+    try:
+        presigned_url = generate_presigned_url(s3_key)
+    except Exception as e:
+        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+
+    return RedirectResponse(presigned_url)
+
+
+@app.get("/api/download_url")
+async def api_download_url(doc_id: str = ""):
+    """JSON endpoint returning a presigned S3 download URL for the original PDF.
+
+    Used by the Next.js frontend. Returns {"download_url": "..."}.
+    """
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    # Query Vespa for the document's s3_key
+    try:
+        schema = get("vespa", "schema_name")
+        connection_count = get("vespa", "connection_count")
+        async with vespa_app.app.asyncio(connections=connection_count) as session:
+            response = await session.query(
+                body={
+                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "hits": 1,
+                },
+            )
+            if not response.is_successful():
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            children = response.json.get("root", {}).get("children", [])
+            if not children:
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            s3_key = children[0].get("fields", {}).get("s3_key", "")
+            if not s3_key:
+                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
+
+    try:
+        presigned_url = generate_presigned_url(s3_key)
+    except Exception as e:
+        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+
+    return JSONResponse({"download_url": presigned_url})
 
 
 @rt("/app")

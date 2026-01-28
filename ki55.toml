@@ -52,8 +52,8 @@ target_hits_per_query_tensor = 100
 hnsw_explore_additional_hits = 300
 default_hits = 3
 rerank_count = 100
-select_fields = "id,title,url,blur_image,page_number,snippet,text"
-select_fields_with_embedding = "id,title,url,blur_image,page_number,snippet,text,embedding_float"
+select_fields = "id,title,url,blur_image,page_number,snippet,text,s3_key"
+select_fields_with_embedding = "id,title,url,blur_image,page_number,snippet,text,s3_key,embedding_float"
 
 [vespa.mtls]
 key_path = "/tmp/vespa-data-plane-private-key.pem"
@@ -187,3 +187,6 @@ id_set_batch_size = 10000
 [autocomplete]
 min_chars = 1
 max_items = 5
+
+[s3]
+presigned_url_expiry_seconds = 3600
