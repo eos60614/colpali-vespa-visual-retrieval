@@ -373,6 +373,30 @@ class VespaQueryClient:
             )
         return response.json["root"]["children"][0]["fields"]["full_image"]
 
+    async def get_s3_key(self, doc_id: str) -> str | None:
+        """Retrieve the s3_key field for a document.
+
+        Args:
+            doc_id: The document ID.
+
+        Returns:
+            The S3 key string, or None if not set.
+        """
+        connection_count = get("vespa", "connection_count")
+        async with self.app.asyncio(connections=connection_count) as session:
+            response: VespaQueryResponse = await session.query(
+                body={
+                    "yql": f'select s3_key from {self.VESPA_SCHEMA_NAME} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "ranking.matching.numThreadsPerSearch": 1,
+                },
+            )
+            assert response.is_successful(), response.json
+        children = response.json.get("root", {}).get("children", [])
+        if not children:
+            return None
+        return children[0]["fields"].get("s3_key") or None
+
     def get_results_children(self, result: VespaQueryResponse) -> list:
         return result["root"]["children"]
 

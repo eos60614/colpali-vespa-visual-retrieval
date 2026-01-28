@@ -37,6 +37,7 @@ from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.s3 import generate_presigned_url
 from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
 from frontend.app import (
     AboutThisDemo,
@@ -527,6 +528,35 @@ async def full_image(doc_id: str):
     )
 
 
+@app.get("/pdf/download")
+async def pdf_download(doc_id: str):
+    """Redirect to a presigned S3 URL for the original PDF.
+
+    Looks up the s3_key stored on the pdf_page document in Vespa,
+    generates a temporary presigned download URL, and redirects the browser.
+    """
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    s3_key = await vespa_app.get_s3_key(doc_id)
+    if not s3_key:
+        return JSONResponse(
+            {"error": "No S3 key found for this document. The PDF source is unavailable."},
+            status_code=404,
+        )
+
+    try:
+        url = generate_presigned_url(s3_key)
+    except Exception as e:
+        logger.error(f"Failed to generate presigned URL for {s3_key}: {e}")
+        return JSONResponse(
+            {"error": "Failed to generate download URL"},
+            status_code=500,
+        )
+
+    return RedirectResponse(url)
+
+
 @rt("/suggestions")
 async def get_suggestions(query: str = ""):
     """Endpoint to get suggestions as user types in the search box"""
@@ -730,6 +760,7 @@ async def api_search(request):
             "blur_image": fields.get("blur_image", ""),
             "relevance": relevance,
             "url": fields.get("url", ""),
+            "s3_key": fields.get("s3_key", ""),
         })
 
     return JSONResponse({
