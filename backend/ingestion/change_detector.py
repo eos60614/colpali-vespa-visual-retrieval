@@ -4,7 +4,7 @@ Change detection for incremental sync operations.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional, Set
 
 from backend.ingestion.checkpoint import CheckpointStore
@@ -91,12 +91,22 @@ class ChangeDetector:
         if since is None:
             since = datetime.min
 
-        until = datetime.utcnow()
+        until = datetime.now(timezone.utc)
 
         self._logger.debug(f"Detecting changes in {table} since {since}")
 
         # Get timestamp column for this table
         ts_column = self.get_timestamp_column(table)
+
+        if ts_column is None:
+            self._logger.warning(
+                f"Table {table} has no recognized timestamp column, "
+                f"skipping change detection"
+            )
+            return ChangeSet(
+                table=table, since=since, until=until,
+                inserts=[], updates=[], deletes=[],
+            )
 
         # Fetch updated records
         inserts = []
@@ -149,6 +159,13 @@ class ChangeDetector:
         """
         ts_column = self.get_timestamp_column(table)
 
+        if ts_column is None:
+            self._logger.warning(
+                f"Table {table} has no recognized timestamp column, "
+                f"skipping incremental change detection"
+            )
+            return
+
         query = f"""
             SELECT * FROM "{table}"
             WHERE "{ts_column}" > $1
@@ -197,7 +214,7 @@ class ChangeDetector:
 
         return list(deleted_ids)
 
-    def get_timestamp_column(self, table: str) -> str:
+    def get_timestamp_column(self, table: str) -> Optional[str]:
         """Get the best timestamp column for change detection.
 
         Checks available columns from schema discovery and picks the best
@@ -207,14 +224,14 @@ class ChangeDetector:
             table: Table name
 
         Returns:
-            Name of the timestamp column to use
+            Name of the timestamp column to use, or None if table has no
+            recognized timestamp columns
         """
         available = self._table_timestamp_columns.get(table, [])
         for preferred in self.TIMESTAMP_COLUMNS:
             if preferred in available:
                 return preferred
-        # Fallback to updated_at if no schema info available
-        return "updated_at"
+        return None
 
     async def get_table_id_set(self, table: str) -> Set[str]:
         """Get set of all record IDs in a table.

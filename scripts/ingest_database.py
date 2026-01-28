@@ -10,7 +10,7 @@ import asyncio
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -122,11 +122,18 @@ Examples:
         help="Parallel workers for Vespa feeding (default: 4)",
     )
 
-    # File options
+    # File options (enabled by default — use --no-* to disable)
     parser.add_argument(
         "--download-files",
         action="store_true",
-        help="Download and index S3 files",
+        default=True,
+        help="Download and index S3 files (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-download-files",
+        action="store_false",
+        dest="download_files",
+        help="Disable file downloading",
     )
     parser.add_argument(
         "--file-workers",
@@ -137,7 +144,14 @@ Examples:
     parser.add_argument(
         "--process-pdfs",
         action="store_true",
-        help="Process downloaded PDFs with ColPali for visual retrieval (requires --download-files)",
+        default=True,
+        help="Process downloaded PDFs with ColPali for visual retrieval (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-process-pdfs",
+        action="store_false",
+        dest="process_pdfs",
+        help="Disable PDF processing with ColPali",
     )
 
     # Other options
@@ -163,13 +177,21 @@ Examples:
 
 
 class MockVespaApp:
-    """Mock Vespa app for dry-run mode."""
+    """Mock Vespa app for dry-run mode (matches pyvespa sync API)."""
 
-    async def feed_data_point(self, schema: str, data_id: str, fields: dict):
+    url = "http://localhost:8080"
+
+    def feed_data_point(self, schema: str, data_id: str, fields: dict):
         pass
 
-    async def delete_data(self, schema: str, data_id: str):
+    def delete_data(self, schema: str, data_id: str):
         pass
+
+    def get_data(self, schema: str, data_id: str):
+        return {"fields": {}}
+
+    def query(self, **kwargs):
+        return {"root": {"children": []}}
 
 
 async def main() -> int:
@@ -185,12 +207,11 @@ async def main() -> int:
         )
         return 1
 
-    # Validate --process-pdfs requires --download-files
+    # process-pdfs requires download-files — auto-disable if files are off
     if args.process_pdfs and not args.download_files:
-        logger.error("--process-pdfs requires --download-files to be enabled")
-        return 1
+        args.process_pdfs = False
 
-    start_time = datetime.utcnow()
+    start_time = datetime.now(timezone.utc)
 
     try:
         # Parse connection config
@@ -285,7 +306,7 @@ async def main() -> int:
                 return 1
 
             # Print results
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             duration = end_time - start_time
 
             logger.info("=" * 60)

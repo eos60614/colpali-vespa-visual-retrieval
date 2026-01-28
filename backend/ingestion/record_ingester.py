@@ -267,14 +267,15 @@ class RecordIngester:
     # Preferred timestamp columns in order of priority
     TIMESTAMP_COLUMNS = ["updated_at", "last_synced_at", "created_at"]
 
-    def _get_timestamp_column(self, table: str) -> str:
+    def _get_timestamp_column(self, table: str) -> Optional[str]:
         """Get the best timestamp column for a table.
 
         Args:
             table: Table name
 
         Returns:
-            Name of the best available timestamp column
+            Name of the best available timestamp column, or None if table
+            has no recognized timestamp columns
         """
         table_info = next(
             (t for t in self._schema_map.tables if t.name == table), None
@@ -283,7 +284,7 @@ class RecordIngester:
             for preferred in self.TIMESTAMP_COLUMNS:
                 if preferred in table_info.timestamp_columns:
                     return preferred
-        return "updated_at"
+        return None
 
     async def ingest_table(
         self,
@@ -307,6 +308,12 @@ class RecordIngester:
         # Build query using the best available timestamp column
         if since:
             ts_col = self._get_timestamp_column(table)
+            if ts_col is None:
+                self._logger.warning(
+                    f"Table {table} has no recognized timestamp column, "
+                    f"cannot do incremental ingest — skipping"
+                )
+                return
             query = f"""
                 SELECT * FROM "{table}"
                 WHERE "{ts_col}" > $1

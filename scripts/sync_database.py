@@ -11,7 +11,7 @@ import logging
 import os
 import signal
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add project root to path
@@ -125,11 +125,18 @@ Examples:
         help="Records per batch",
     )
 
-    # File processing options
+    # File processing options (enabled by default — use --no-* to disable)
     parser.add_argument(
         "--download-files",
         action="store_true",
-        help="Download and index S3 files during sync",
+        default=True,
+        help="Download and index S3 files during sync (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-download-files",
+        action="store_false",
+        dest="download_files",
+        help="Disable file downloading",
     )
     parser.add_argument(
         "--file-workers",
@@ -140,7 +147,14 @@ Examples:
     parser.add_argument(
         "--process-pdfs",
         action="store_true",
-        help="Process downloaded PDFs with ColPali for visual retrieval (requires --download-files)",
+        default=True,
+        help="Process downloaded PDFs with ColPali for visual retrieval (default: enabled)",
+    )
+    parser.add_argument(
+        "--no-process-pdfs",
+        action="store_false",
+        dest="process_pdfs",
+        help="Disable PDF processing with ColPali",
     )
 
     # Delete detection
@@ -227,7 +241,7 @@ class SyncDaemon:
         """Run a single sync cycle."""
         self._cycle_count += 1
         self._logger.info(f"Starting sync cycle #{self._cycle_count}...")
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
 
         # Determine if delete detection should run this cycle
         run_deletes = False
@@ -241,7 +255,7 @@ class SyncDaemon:
             self._sync_config, run_delete_detection=run_deletes,
         )
 
-        duration = datetime.utcnow() - start_time
+        duration = datetime.now(timezone.utc) - start_time
 
         # Build status message
         stats = [f"{result.records_processed} records"]
@@ -291,13 +305,21 @@ async def print_status(
 
 
 class MockVespaApp:
-    """Mock Vespa app when real one is not available."""
+    """Mock Vespa app when real one is not available (matches pyvespa sync API)."""
 
-    async def feed_data_point(self, schema: str, data_id: str, fields: dict):
+    url = "http://localhost:8080"
+
+    def feed_data_point(self, schema: str, data_id: str, fields: dict):
         pass
 
-    async def delete_data(self, schema: str, data_id: str):
+    def delete_data(self, schema: str, data_id: str):
         pass
+
+    def get_data(self, schema: str, data_id: str):
+        return {"fields": {}}
+
+    def query(self, **kwargs):
+        return {"root": {"children": []}}
 
 
 async def main() -> int:
@@ -313,10 +335,9 @@ async def main() -> int:
         )
         return 1
 
-    # Validate --process-pdfs requires --download-files
+    # process-pdfs requires download-files — auto-disable if files are off
     if args.process_pdfs and not args.download_files:
-        logger.error("--process-pdfs requires --download-files to be enabled")
-        return 1
+        args.process_pdfs = False
 
     try:
         # Initialize checkpoint store (needed for all modes)

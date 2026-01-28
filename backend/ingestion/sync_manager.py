@@ -4,12 +4,15 @@ Orchestration of database sync operations.
 
 import json
 import logging
+import shutil
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
+
+import httpx
 
 if TYPE_CHECKING:
     from backend.ingestion.pdf_processor import PDFProcessor
@@ -131,7 +134,7 @@ class SyncManager:
     # Preferred timestamp columns in order of priority
     TIMESTAMP_COLUMNS = ["updated_at", "last_synced_at", "created_at"]
 
-    def _get_timestamp_column(self, table: str) -> str:
+    def _get_timestamp_column(self, table: str) -> Optional[str]:
         """Get the best timestamp column for a table from schema map."""
         table_info = next(
             (t for t in self._schema_map.tables if t.name == table), None
@@ -140,7 +143,7 @@ class SyncManager:
             for preferred in self.TIMESTAMP_COLUMNS:
                 if preferred in table_info.timestamp_columns:
                     return preferred
-        return "updated_at"
+        return None
 
     def get_tables_to_sync(self, config: SyncConfig) -> list[str]:
         """Get list of tables to sync based on config.
@@ -188,7 +191,7 @@ class SyncManager:
             job_id=str(uuid.uuid4()),
             job_type="FULL",
             status="RUNNING",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             tables_config={
                 "include": config.tables,
                 "exclude": config.exclude_tables,
@@ -332,13 +335,13 @@ class SyncManager:
                     )
 
             job.status = "COMPLETED" if records_failed == 0 else "COMPLETED_WITH_ERRORS"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
         except Exception as e:
             self._logger.error(f"Full sync failed: {e}")
             job.status = "FAILED"
             job.errors.append(str(e))
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
         self._current_job = None
 
@@ -379,7 +382,7 @@ class SyncManager:
             job_id=str(uuid.uuid4()),
             job_type="INCREMENTAL",
             status="RUNNING",
-            started_at=datetime.utcnow(),
+            started_at=datetime.now(timezone.utc),
             tables_config={
                 "include": config.tables,
                 "exclude": config.exclude_tables,
@@ -590,6 +593,12 @@ class SyncManager:
                                         self._logger.warning(
                                             f"Failed to process PDF {pdf_result.file.filename}: {pdf_result.error}"
                                         )
+
+                            # Clean up downloaded files — S3 has the originals
+                            table_dir = file_downloader._download_dir / table
+                            if table_dir.exists():
+                                shutil.rmtree(table_dir, ignore_errors=True)
+                                self._logger.debug(f"Cleaned up downloads for {table}")
                         elif table_files_skipped > 0:
                             self._logger.info(
                                 f"Skipped {table_files_skipped} files (unchanged) in {table}"
@@ -665,13 +674,13 @@ class SyncManager:
                     )
 
             job.status = "COMPLETED" if records_failed == 0 else "COMPLETED_WITH_ERRORS"
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
         except Exception as e:
             self._logger.error(f"Incremental sync failed: {e}")
             job.status = "FAILED"
             job.errors.append(str(e))
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now(timezone.utc)
 
         self._current_job = None
 
@@ -783,7 +792,7 @@ class SyncManager:
         for record_id in record_ids:
             doc_id = f"{table}:{record_id}"
             try:
-                await self._vespa.delete_data(
+                self._vespa.delete_data(
                     schema=get("vespa", "procore_record_schema"),
                     data_id=doc_id,
                 )
@@ -999,7 +1008,8 @@ class SyncManager:
     async def _get_vespa_record_ids(self, table: str) -> set[str]:
         """Get all source_id values from Vespa for a given table.
 
-        Uses Vespa visiting/query to retrieve all record IDs for a table.
+        Uses Vespa document visit API with continuation tokens to handle
+        tables of any size without offset limits.
 
         Args:
             table: Source table name
@@ -1008,41 +1018,48 @@ class SyncManager:
             Set of record IDs currently in Vespa
         """
         ids: set[str] = set()
-        offset = 0
         batch_size = get("ingestion", "sync", "vespa_id_query_batch_size")
+        schema = get("vespa", "procore_record_schema")
+        # Support both pyvespa Vespa (has .url) and VespaQueryClient (has .vespa_app_url)
+        if hasattr(self._vespa, "url"):
+            base_url = self._vespa.url
+        elif hasattr(self._vespa, "vespa_app_url"):
+            base_url = self._vespa.vespa_app_url
+        else:
+            base_url = "http://localhost:8080"
 
-        while True:
-            try:
-                response = self._vespa.query(
-                    yql=f'select source_id from {get("vespa", "procore_record_schema")} where source_table contains "{table}"',
-                    hits=batch_size,
-                    offset=offset,
-                )
+        continuation = None
 
-                if hasattr(response, "json"):
-                    data = response.json
-                elif isinstance(response, dict):
-                    data = response
-                else:
-                    break
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                while True:
+                    params = {
+                        "wantedDocumentCount": batch_size,
+                        "selection": f'{schema}.source_table=="{table}"',
+                        "fieldSet": f"{schema}:source_id",
+                    }
+                    if continuation:
+                        params["continuation"] = continuation
 
-                children = data.get("root", {}).get("children", [])
-                if not children:
-                    break
+                    resp = await client.get(
+                        f"{base_url}/document/v1/{schema}/{schema}/docid",
+                        params=params,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
 
-                for child in children:
-                    fields = child.get("fields", {})
-                    source_id = fields.get("source_id")
-                    if source_id:
-                        ids.add(str(source_id))
+                    documents = data.get("documents", [])
+                    for doc in documents:
+                        source_id = doc.get("fields", {}).get("source_id")
+                        if source_id:
+                            ids.add(str(source_id))
 
-                if len(children) < batch_size:
-                    break
-                offset += batch_size
+                    continuation = data.get("continuation")
+                    if not continuation or not documents:
+                        break
 
-            except Exception as e:
-                self._logger.warning(f"Failed to query Vespa record IDs for {table}: {e}")
-                break
+        except Exception as e:
+            self._logger.warning(f"Failed to visit Vespa record IDs for {table}: {e}")
 
         return ids
 
@@ -1079,6 +1096,12 @@ class SyncManager:
         # Build query using best available timestamp column
         if since:
             ts_col = self._get_timestamp_column(table)
+            if ts_col is None:
+                self._logger.warning(
+                    f"Table {table} has no recognized timestamp column, "
+                    f"skipping incremental file download"
+                )
+                return 0, 0, 0, 0, 0
             query = f'SELECT * FROM "{table}" WHERE "{ts_col}" > $1'
             args = (since,)
         else:
@@ -1137,6 +1160,12 @@ class SyncManager:
                         f"Failed to process PDF {pdf_result.file.filename}: {pdf_result.error}"
                     )
 
+        # Clean up downloaded files — S3 has the originals
+        table_dir = file_downloader._download_dir / table
+        if table_dir.exists():
+            shutil.rmtree(table_dir, ignore_errors=True)
+            self._logger.debug(f"Cleaned up downloads for {table}")
+
         return files_downloaded, files_failed, pdfs_processed, pdfs_failed, pdf_pages_indexed
 
     async def _save_checkpoint(
@@ -1148,7 +1177,7 @@ class SyncManager:
         error_message: Optional[str] = None,
     ) -> None:
         """Save checkpoint for a table."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         checkpoint = Checkpoint(
             table_name=table,
             last_sync_timestamp=now,

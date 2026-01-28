@@ -3,7 +3,7 @@ Tests for conditional file re-processing in incremental sync.
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,6 +34,7 @@ def mock_vespa():
     mock.delete_data = MagicMock()
     mock.get_data = MagicMock()
     mock.query = MagicMock()
+    mock.url = "http://localhost:8080"
     return mock
 
 
@@ -302,7 +303,7 @@ class TestIncrementalSyncConditionalFiles:
     @pytest.mark.asyncio
     async def test_skips_unchanged_files(self, sync_manager, mock_vespa, mock_db, mock_checkpoint_store):
         """When file references haven't changed, no downloads should occur."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last_sync = now - timedelta(hours=1)
         mock_checkpoint_store.get_last_sync_time.return_value = last_sync
 
@@ -376,7 +377,7 @@ class TestIncrementalSyncConditionalFiles:
         self, sync_manager, mock_vespa, mock_db, mock_checkpoint_store,
     ):
         """For updated records, only added file references should trigger downloads."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last_sync = now - timedelta(hours=1)
         mock_checkpoint_store.get_last_sync_time.return_value = last_sync
 
@@ -443,7 +444,7 @@ class TestIncrementalSyncConditionalFiles:
         self, sync_manager, mock_vespa, mock_db, mock_checkpoint_store,
     ):
         """For newly inserted records, all file references should be downloaded."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         mock_checkpoint_store.get_last_sync_time.return_value = None
 
         table_mock = MagicMock()
@@ -500,34 +501,59 @@ class TestIncrementalSyncConditionalFiles:
 
 class TestGetVespaRecordIds:
 
+    def _make_visit_response(self, documents, continuation=None):
+        """Create a mock httpx response for the Vespa visit API."""
+        resp = MagicMock()
+        data = {
+            "documents": documents,
+            "documentCount": len(documents),
+        }
+        if continuation:
+            data["continuation"] = continuation
+        resp.json.return_value = data
+        resp.raise_for_status = MagicMock()
+        return resp
+
     @pytest.mark.asyncio
     async def test_returns_record_ids(self, sync_manager, mock_vespa):
-        mock_response = MagicMock()
-        mock_response.json = {
-            "root": {
-                "children": [
-                    {"fields": {"source_id": "1"}},
-                    {"fields": {"source_id": "2"}},
-                    {"fields": {"source_id": "3"}},
-                ]
-            }
-        }
-        mock_vespa.query.return_value = mock_response
+        mock_resp = self._make_visit_response([
+            {"fields": {"source_id": "1"}},
+            {"fields": {"source_id": "2"}},
+            {"fields": {"source_id": "3"}},
+        ])
 
-        ids = await sync_manager._get_vespa_record_ids("photos")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+
+        with patch("backend.ingestion.sync_manager.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            ids = await sync_manager._get_vespa_record_ids("photos")
+
         assert ids == {"1", "2", "3"}
 
     @pytest.mark.asyncio
     async def test_returns_empty_on_no_results(self, sync_manager, mock_vespa):
-        mock_response = MagicMock()
-        mock_response.json = {"root": {"children": []}}
-        mock_vespa.query.return_value = mock_response
+        mock_resp = self._make_visit_response([])
 
-        ids = await sync_manager._get_vespa_record_ids("photos")
+        mock_client = AsyncMock()
+        mock_client.get.return_value = mock_resp
+
+        with patch("backend.ingestion.sync_manager.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            ids = await sync_manager._get_vespa_record_ids("photos")
+
         assert ids == set()
 
     @pytest.mark.asyncio
-    async def test_handles_query_error(self, sync_manager, mock_vespa):
-        mock_vespa.query.side_effect = Exception("Vespa down")
-        ids = await sync_manager._get_vespa_record_ids("photos")
+    async def test_handles_visit_error(self, sync_manager, mock_vespa):
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = Exception("Vespa down")
+
+        with patch("backend.ingestion.sync_manager.httpx.AsyncClient") as MockClient:
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+            ids = await sync_manager._get_vespa_record_ids("photos")
+
         assert ids == set()

@@ -4,7 +4,7 @@ Checkpoint persistence for sync state using SQLite.
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -118,25 +118,45 @@ class CheckpointStore:
             await db.commit()
 
     async def get_last_sync_time(self, table_name: str) -> Optional[datetime]:
-        """Get last successful sync timestamp for a table."""
+        """Get last successful sync timestamp for a table.
+
+        Returns a naive UTC datetime for compatibility with PostgreSQL
+        timestamp columns (which store naive UTC).
+        """
         checkpoint = await self.get(table_name)
         if checkpoint and checkpoint.sync_status == "COMPLETED":
-            return checkpoint.last_sync_timestamp
+            ts = checkpoint.last_sync_timestamp
+            # Strip tzinfo so comparisons with naive PG timestamps work
+            return ts.replace(tzinfo=None) if ts.tzinfo else ts
         return None
+
+    @staticmethod
+    def _ensure_aware(dt: datetime) -> datetime:
+        """Ensure a datetime is timezone-aware (UTC).
+
+        Handles legacy naive datetimes stored before the utcnow→now(UTC) migration.
+        """
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
 
     def _row_to_checkpoint(self, row: aiosqlite.Row) -> Checkpoint:
         """Convert a database row to a Checkpoint object."""
         return Checkpoint(
             table_name=row["table_name"],
-            last_sync_timestamp=datetime.fromisoformat(row["last_sync_timestamp"])
+            last_sync_timestamp=self._ensure_aware(
+                datetime.fromisoformat(row["last_sync_timestamp"])
+            )
             if row["last_sync_timestamp"]
-            else datetime.min,
+            else datetime.min.replace(tzinfo=timezone.utc),
             last_record_id=row["last_record_id"],
             records_processed=row["records_processed"] or 0,
             records_failed=row["records_failed"] or 0,
             sync_status=row["sync_status"] or "IDLE",
             error_message=row["error_message"],
-            updated_at=datetime.fromisoformat(row["updated_at"])
+            updated_at=self._ensure_aware(
+                datetime.fromisoformat(row["updated_at"])
+            )
             if row["updated_at"]
-            else datetime.now(),
+            else datetime.now(timezone.utc),
         )
