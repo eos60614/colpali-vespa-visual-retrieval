@@ -509,6 +509,36 @@ class VespaQueryClient:
             assert response.is_successful(), response.json
         return self.format_query_results(query, response)
 
+    async def query_vespa_raw(
+        self,
+        yql: str,
+        hits: int = 100,
+        **kwargs,
+    ) -> dict:
+        """Execute a raw YQL query against Vespa.
+
+        Args:
+            yql: YQL query string
+            hits: Number of hits to return
+            **kwargs: Additional query parameters
+
+        Returns:
+            Raw Vespa response JSON
+        """
+        connection_count = get("vespa", "connection_count")
+        async with self.app.asyncio(connections=connection_count) as session:
+            response: VespaQueryResponse = await session.query(
+                body={
+                    "yql": yql,
+                    "hits": hits,
+                    "ranking": "unranked",
+                    "presentation.timing": True,
+                    **kwargs,
+                },
+            )
+            assert response.is_successful(), response.json
+        return response.json
+
     async def keepalive(self) -> bool:
         """
         Query Vespa to keep the connection alive.

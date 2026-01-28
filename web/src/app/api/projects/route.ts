@@ -1,32 +1,34 @@
 import { NextResponse } from "next/server";
 
+const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
+
 /**
  * GET /api/projects
  *
- * Returns the list of available projects.
- * In production, this queries the Vespa backend for project metadata.
+ * Proxies to the backend Procore projects endpoint.
+ * Returns real project data from the Procore database via Vespa.
  */
-
 export async function GET() {
-  // Mock response — in production, query Vespa or project database
-  return NextResponse.json({
-    projects: [
-      {
-        id: "proj-harbor-tower",
-        name: "Harbor Tower Mixed-Use",
-        description: "32-story mixed-use development at 450 Harbor Blvd",
-        documentCount: 1247,
-        lastAccessedAt: "2025-01-15T10:30:00Z",
-        createdAt: "2024-06-01T00:00:00Z",
-      },
-      {
-        id: "proj-westfield-campus",
-        name: "Westfield Corporate Campus",
-        description: "Phase 2 expansion — Building C and parking structure",
-        documentCount: 834,
-        lastAccessedAt: "2025-01-14T16:45:00Z",
-        createdAt: "2024-09-15T00:00:00Z",
-      },
-    ],
-  });
+  try {
+    const res = await fetch(`${BACKEND_URL}/api/procore/projects`, {
+      next: { revalidate: 60 }, // Cache for 60 seconds
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      return NextResponse.json(
+        { projects: [], error: text || "Backend request failed" },
+        { status: res.status }
+      );
+    }
+
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Internal server error";
+    return NextResponse.json(
+      { projects: [], error: message },
+      { status: 500 }
+    );
+  }
 }

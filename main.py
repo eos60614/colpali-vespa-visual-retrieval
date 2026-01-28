@@ -759,6 +759,238 @@ async def api_full_image(doc_id: str):
     return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
 
 
+# ---------------------------------------------------------------------------
+# Procore database API — serves real data from Vespa procore_record schema
+# ---------------------------------------------------------------------------
+
+# Map Procore source_table names to frontend DocumentCategory values
+_TABLE_TO_CATEGORY = {
+    "drawings": "drawing",
+    "drawing_revisions": "drawing",
+    "drawing_sets": "drawing",
+    "drawing_areas": "drawing",
+    "rfis": "rfi",
+    "submittals": "submittal",
+    "specification_sections": "spec",
+    "specification_section_revisions": "spec",
+    "change_orders": "change_order",
+    "commitment_change_orders": "change_order",
+    "photos": "photo",
+    "daily_logs": "report",
+    "timesheets": "report",
+}
+
+# Reverse map: category -> list of source tables
+_CATEGORY_TO_TABLES: dict[str, list[str]] = {}
+for _tbl, _cat in _TABLE_TO_CATEGORY.items():
+    _CATEGORY_TO_TABLES.setdefault(_cat, []).append(_tbl)
+
+_PROJECT_COLORS = [
+    "#3b82f6", "#8b5cf6", "#10b981", "#f59e0b",
+    "#ef4444", "#06b6d4", "#6366f1", "#ec4899",
+]
+
+_PROCORE_SCHEMA = get("vespa", "procore_record_schema")
+
+
+def _parse_category_counts(result: dict) -> dict[str, dict[str, int]]:
+    """Parse Vespa grouping response into {project_id: {source_table: count}}."""
+    counts: dict[str, dict[str, int]] = {}
+    root_children = result.get("root", {}).get("children", [])
+    for child in root_children:
+        if not child.get("id", "").startswith("group:root"):
+            continue
+        for group_list in child.get("children", []):
+            for project_group in group_list.get("children", []):
+                project_id = str(project_group.get("value", ""))
+                if not project_id or project_id == "0":
+                    continue
+                table_counts: dict[str, int] = {}
+                for inner_list in project_group.get("children", []):
+                    for table_group in inner_list.get("children", []):
+                        table_name = str(table_group.get("value", ""))
+                        count = table_group.get("fields", {}).get("count()", 0)
+                        table_counts[table_name] = count
+                counts[project_id] = table_counts
+    return counts
+
+
+def _aggregate_categories(table_counts: dict[str, int]) -> list[dict]:
+    """Aggregate source_table counts into frontend category counts."""
+    category_counts: dict[str, int] = {}
+    for table, count in table_counts.items():
+        if table == "projects":
+            continue
+        category = _TABLE_TO_CATEGORY.get(table, "other")
+        category_counts[category] = category_counts.get(category, 0) + count
+    return [
+        {"category": cat, "count": cnt}
+        for cat, cnt in sorted(category_counts.items(), key=lambda x: -x[1])
+        if cnt > 0
+    ]
+
+
+@app.get("/api/procore/projects")
+async def api_procore_projects():
+    """List Procore projects with category counts from Vespa."""
+    try:
+        # Run both queries concurrently
+        projects_coro = vespa_app.query_vespa_raw(
+            f'select * from {_PROCORE_SCHEMA} where source_table contains "projects"',
+            hits=100,
+        )
+        counts_coro = vespa_app.query_vespa_raw(
+            f"select * from {_PROCORE_SCHEMA} where true "
+            f"| all(group(project_id) max(100) each(output(count()) "
+            f"all(group(source_table) max(50) each(output(count())))))",
+            hits=0,
+        )
+        projects_result, counts_result = await asyncio.gather(
+            projects_coro, counts_coro
+        )
+
+        project_records = projects_result.get("root", {}).get("children", [])
+        project_category_counts = _parse_category_counts(counts_result)
+
+        projects = []
+        for idx, record in enumerate(project_records):
+            fields = record.get("fields", {})
+            metadata = fields.get("metadata", {})
+            # source_id is the project's own ID;
+            # project_id may be null for project records
+            project_id = str(
+                fields.get("source_id")
+                or metadata.get("id")
+                or fields.get("project_id")
+                or ""
+            )
+            if not project_id:
+                continue
+
+            table_counts = project_category_counts.get(project_id, {})
+            categories = _aggregate_categories(table_counts)
+            total_docs = sum(c["count"] for c in categories)
+
+            name = (
+                metadata.get("name")
+                or metadata.get("display_name")
+                or f"Project {project_id}"
+            )
+            description = metadata.get("address", "")
+            if metadata.get("city"):
+                description = (
+                    f"{description}, {metadata['city']}"
+                    if description
+                    else metadata["city"]
+                )
+
+            projects.append(
+                {
+                    "id": project_id,
+                    "name": name,
+                    "description": description,
+                    "documentCount": total_docs,
+                    "lastAccessedAt": metadata.get("updated_at", ""),
+                    "createdAt": metadata.get("created_at", ""),
+                    "categories": categories,
+                    "color": _PROJECT_COLORS[idx % len(_PROJECT_COLORS)],
+                }
+            )
+
+        return JSONResponse({"projects": projects})
+
+    except Exception as e:
+        logger.error(f"Error fetching Procore projects: {e}")
+        return JSONResponse({"projects": [], "error": str(e)}, status_code=500)
+
+
+@app.get("/api/procore/documents")
+async def api_procore_documents(
+    project_id: str = "",
+    category: str = "",
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List documents from Procore with optional filtering."""
+    try:
+        conditions = []
+
+        if project_id:
+            conditions.append(f"project_id = {int(project_id)}")
+
+        if category:
+            tables = _CATEGORY_TO_TABLES.get(category, [])
+            if tables:
+                table_clauses = " or ".join(
+                    f'source_table contains "{t}"' for t in tables
+                )
+                conditions.append(f"({table_clauses})")
+
+        # Always exclude project metadata records from document listings
+        conditions.append('!(source_table contains "projects")')
+
+        where = " and ".join(conditions) if conditions else "true"
+
+        if search and search.strip():
+            # Escape quotes in search term
+            safe_search = search.replace('"', '\\"').strip()
+            where = f'({where}) and content_text contains "{safe_search}"'
+
+        yql = f"select * from {_PROCORE_SCHEMA} where {where}"
+        result = await vespa_app.query_vespa_raw(yql, hits=limit, offset=offset)
+
+        children = result.get("root", {}).get("children", [])
+        total = result.get("root", {}).get("fields", {}).get("totalCount", 0)
+
+        documents = []
+        for record in children:
+            fields = record.get("fields", {})
+            metadata = fields.get("metadata", {})
+            source_table = fields.get("source_table", "")
+            cat = _TABLE_TO_CATEGORY.get(source_table, "other")
+
+            title = (
+                metadata.get("title")
+                or metadata.get("name")
+                or metadata.get("subject")
+                or (fields.get("content_text", "") or "")[:100]
+                or f"{source_table} record"
+            )
+
+            doc_number = (
+                metadata.get("number")
+                or metadata.get("drawing_number")
+                or metadata.get("revision_number")
+                or ""
+            )
+
+            # Build tags from source_table and available metadata keys
+            tags = [source_table]
+            if metadata.get("discipline"):
+                tags.append(metadata["discipline"])
+
+            documents.append(
+                {
+                    "id": fields.get("doc_id", ""),
+                    "title": title,
+                    "documentNumber": str(doc_number),
+                    "category": cat,
+                    "pageCount": int(metadata.get("page_count", 0) or 0),
+                    "uploadedAt": metadata.get("created_at", ""),
+                    "tags": tags,
+                }
+            )
+
+        return JSONResponse({"documents": documents, "total": total})
+
+    except Exception as e:
+        logger.error(f"Error fetching Procore documents: {e}")
+        return JSONResponse(
+            {"documents": [], "total": 0, "error": str(e)}, status_code=500
+        )
+
+
 @rt("/app")
 def get():
     return Layout(Main(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4")))

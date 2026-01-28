@@ -1,4 +1,4 @@
-import type { SearchResult } from "@/types";
+import type { SearchResult, Project, Document } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Backend search response shape (mirrors Python /api/search JSON output)
@@ -110,6 +110,52 @@ export function getChatStreamUrl(
   });
   return `/api/chat?${params.toString()}`;
 }
+
+// ---------------------------------------------------------------------------
+// Procore data APIs
+// ---------------------------------------------------------------------------
+
+export async function getProjects(
+  signal?: AbortSignal
+): Promise<{ projects: Project[] }> {
+  const res = await fetch("/api/projects", { signal });
+  if (!res.ok) {
+    return { projects: [] };
+  }
+  return res.json();
+}
+
+export interface GetDocumentsParams {
+  projectId?: string;
+  category?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export async function getDocuments(
+  params: GetDocumentsParams = {},
+  signal?: AbortSignal
+): Promise<{ documents: Document[]; total: number }> {
+  const searchParams = new URLSearchParams();
+  if (params.projectId) searchParams.set("projectId", params.projectId);
+  if (params.category) searchParams.set("category", params.category);
+  if (params.search) searchParams.set("search", params.search);
+  if (params.limit) searchParams.set("limit", String(params.limit));
+  if (params.offset) searchParams.set("offset", String(params.offset));
+
+  const res = await fetch(`/api/documents?${searchParams.toString()}`, {
+    signal,
+  });
+  if (!res.ok) {
+    return { documents: [], total: 0 };
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Upload
+// ---------------------------------------------------------------------------
 
 export async function uploadDocument(
   formData: FormData,
