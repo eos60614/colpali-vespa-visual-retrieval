@@ -32,7 +32,7 @@ from PIL import Image
 from shad4fast import ShadHead
 from vespa.application import Vespa
 
-from backend.config import get
+from backend import config
 from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
@@ -65,28 +65,28 @@ highlight_js = HighlightJS(
 
 overlayscrollbars_link = Link(
     rel="stylesheet",
-    href=get("app", "cdn", "overlayscrollbars_css"),
+    href=config.get("app", "cdn", "overlayscrollbars_css"),
     type="text/css",
 )
 overlayscrollbars_js = Script(
-    src=get("app", "cdn", "overlayscrollbars_js")
+    src=config.get("app", "cdn", "overlayscrollbars_js")
 )
 awesomplete_link = Link(
     rel="stylesheet",
-    href=get("app", "cdn", "awesomplete_css"),
+    href=config.get("app", "cdn", "awesomplete_css"),
     type="text/css",
 )
 awesomplete_js = Script(
-    src=get("app", "cdn", "awesomplete_js")
+    src=config.get("app", "cdn", "awesomplete_js")
 )
 sselink = Script(
-    src=get("app", "cdn", "htmx_sse_js"),
-    integrity=get("app", "cdn", "htmx_sse_integrity"),
+    src=config.get("app", "cdn", "htmx_sse_js"),
+    integrity=config.get("app", "cdn", "htmx_sse_integrity"),
     crossorigin="anonymous",
 )
 
 # Get log level from config
-LOG_LEVEL = get("app", "log_level").upper()
+LOG_LEVEL = config.get("app", "log_level").upper()
 # Configure logger
 logger = logging.getLogger("vespa_app")
 handler = logging.StreamHandler(sys.stdout)
@@ -133,9 +133,9 @@ RESPONSE FORMAT:
 - Do NOT include backticks (`) or markdown formatting.
 - End your response with a <b>Sources</b> section listing each document and page you referenced.
 """
-STATIC_DIR = Path(get("app", "static_dir"))
-IMG_DIR = Path(get("app", "img_dir"))
-SIM_MAP_DIR = Path(get("app", "sim_map_dir"))
+STATIC_DIR = Path(config.get("app", "static_dir"))
+IMG_DIR = Path(config.get("app", "img_dir"))
+SIM_MAP_DIR = Path(config.get("app", "sim_map_dir"))
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(SIM_MAP_DIR, exist_ok=True)
 
@@ -177,7 +177,7 @@ def get():
     return Layout(Main(AboutThisDemo()))
 
 
-MAX_FILE_SIZE = get("app", "max_file_size_mb") * 1024 * 1024
+MAX_FILE_SIZE = config.get("app", "max_file_size_mb") * 1024 * 1024
 
 
 @rt("/upload")
@@ -234,22 +234,22 @@ async def post(
     if tags.strip():
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         # Validate tag count
-        max_tags = get("app", "validation", "max_tags")
+        max_tags = config.get("app", "validation", "max_tags")
         if len(tag_list) > max_tags:
             return UploadError(f"Maximum {max_tags} tags allowed")
         # Validate individual tag length
-        max_tag_length = get("app", "validation", "max_tag_length")
+        max_tag_length = config.get("app", "validation", "max_tag_length")
         for tag in tag_list:
             if len(tag) > max_tag_length:
                 return UploadError(f"Each tag must be {max_tag_length} characters or less")
 
     # Validate title length
-    max_title_length = get("app", "validation", "max_title_length")
+    max_title_length = config.get("app", "validation", "max_title_length")
     if len(title) > max_title_length:
         return UploadError(f"Title must be {max_title_length} characters or less")
 
     # Validate description length
-    max_desc_length = get("app", "validation", "max_description_length")
+    max_desc_length = config.get("app", "validation", "max_description_length")
     if len(description) > max_desc_length:
         return UploadError(f"Description must be {max_desc_length} characters or less")
 
@@ -335,7 +335,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
     # Parse rerank parameter (default to True for better results)
     do_rerank = rerank.lower() in ("true", "1", "yes")
     do_llm_rerank = is_llm_rerank_enabled()
-    final_hits = get("search", "final_hits")
+    final_hits = config.get("search", "final_hits")
 
     # Get the hash of the query and ranking value
     query_id = generate_query_id(query, ranking)
@@ -364,7 +364,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=do_rerank,
-        rerank_hits=get("search", "rerank_hits"),
+        rerank_hits=config.get("search", "rerank_hits"),
         final_hits=maxsim_final_hits,  # More candidates when LLM reranking follows
     )
     end = time.perf_counter()
@@ -395,8 +395,8 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
             "doc_id": r["fields"].get("id", ""),
             "title": r["fields"].get("title", "Unknown"),
             "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
-            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+            "snippet": (r["fields"].get("snippet", "") or "")[:config.get("image", "truncation", "snippet_length")],
+            "text": (r["fields"].get("text", "") or "")[:config.get("image", "truncation", "text_length")],
         }
         for r in search_results
     ]
@@ -423,7 +423,7 @@ def get_results_children(result):
 
 async def poll_vespa_keepalive():
     while True:
-        await asyncio.sleep(get("app", "keepalive_interval_seconds"))
+        await asyncio.sleep(config.get("app", "keepalive_interval_seconds"))
         await vespa_app.keepalive()
         logger.debug(f"Vespa keepalive: {time.time()}")
 
@@ -440,8 +440,8 @@ def get_and_store_sim_maps(
         idx_to_token=idx_to_token,
     )
     img_paths = [IMG_DIR / f"{doc_id}.jpg" for doc_id in doc_ids]
-    max_wait = get("image", "max_wait_seconds")
-    poll_sleep = get("image", "poll_sleep_seconds")
+    max_wait = config.get("image", "max_wait_seconds")
+    poll_sleep = config.get("image", "poll_sleep_seconds")
     start_time = time.time()
     while (
         not all([os.path.exists(img_path) for img_path in img_paths])
@@ -545,8 +545,8 @@ async def get_suggestions(query: str = ""):
 async def message_generator(query_id: str, query: str, doc_ids: list):
     """Generator function to yield SSE messages for chat response"""
     images = []
-    num_images = get("search", "num_images")
-    max_wait = get("image", "max_wait_chat_seconds")
+    num_images = config.get("search", "num_images")
+    max_wait = config.get("image", "max_wait_chat_seconds")
     start_time = time.time()
     # Check if full images are ready on disk
     while (
@@ -567,7 +567,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                 )
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
-            await asyncio.sleep(get("image", "poll_sleep_seconds"))
+            await asyncio.sleep(config.get("image", "poll_sleep_seconds"))
 
     # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
@@ -594,7 +594,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
             f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
         )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
+            context_lines.append(f"  Text extract: {meta['text'][:config.get('image', 'truncation', 'snippet_length')]}")
     doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
 
     # Build image content blocks for OpenAI-compatible vision API
@@ -607,7 +607,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
+        img.save(buf, format="JPEG", quality=config.get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         content_parts.append({
             "type": "image_url",
@@ -620,7 +620,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+        async with httpx.AsyncClient(timeout=config.get("llm", "http_timeout_seconds")) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -648,7 +648,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                         if text:
                             response_text += text
                             yield f"event: message\ndata: {replace_newline_with_br(response_text)}\n\n"
-                            await asyncio.sleep(get("llm", "streaming_sleep_seconds"))
+                            await asyncio.sleep(config.get("llm", "streaming_sleep_seconds"))
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
     except Exception as e:
@@ -697,8 +697,8 @@ async def api_search(request):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=True,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=get("search", "final_hits"),
+        rerank_hits=config.get("search", "rerank_hits"),
+        final_hits=config.get("search", "final_hits"),
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
@@ -790,7 +790,7 @@ _PROJECT_COLORS = [
     "#ef4444", "#06b6d4", "#6366f1", "#ec4899",
 ]
 
-_PROCORE_SCHEMA = get("vespa", "procore_record_schema")
+_PROCORE_SCHEMA = config.get("vespa", "procore_record_schema")
 
 
 def _parse_category_counts(result: dict) -> dict[str, dict[str, int]]:
@@ -997,11 +997,11 @@ def get():
 
 
 if __name__ == "__main__":
-    HOT_RELOAD = get("app", "hot_reload")
+    HOT_RELOAD = config.get("app", "hot_reload")
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
     uvicorn.run(
         "main:app",
-        host=get("app", "host"),
-        timeout_worker_healthcheck=get("app", "healthcheck_timeout"),
-        port=get("app", "port"),
+        host=config.get("app", "host"),
+        timeout_worker_healthcheck=config.get("app", "healthcheck_timeout"),
+        port=config.get("app", "port"),
     )
