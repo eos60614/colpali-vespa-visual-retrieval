@@ -142,6 +142,19 @@ Examples:
         help="Process downloaded PDFs with ColPali for visual retrieval (requires --download-files)",
     )
 
+    # Delete detection
+    parser.add_argument(
+        "--detect-deletes",
+        action="store_true",
+        help="Detect and remove records deleted from the source database",
+    )
+    parser.add_argument(
+        "--delete-interval",
+        type=int,
+        default=10,
+        help="In daemon mode, run delete detection every N cycles (default: 10, 0=every cycle)",
+    )
+
     parser.add_argument(
         "--verbose",
         "-v",
@@ -169,6 +182,7 @@ class SyncDaemon:
         self._pid_file = pid_file
         self._logger = logger
         self._running = False
+        self._cycle_count = 0
 
     async def start(self):
         """Start the daemon."""
@@ -210,10 +224,21 @@ class SyncDaemon:
 
     async def _run_sync_cycle(self):
         """Run a single sync cycle."""
-        self._logger.info("Starting sync cycle...")
+        self._cycle_count += 1
+        self._logger.info(f"Starting sync cycle #{self._cycle_count}...")
         start_time = datetime.utcnow()
 
-        result = await self._sync_manager.run_incremental_sync(self._sync_config)
+        # Determine if delete detection should run this cycle
+        run_deletes = False
+        if self._sync_config.detect_deletes:
+            interval = self._sync_config.delete_detection_interval
+            if interval == 0 or (self._cycle_count % interval == 0):
+                run_deletes = True
+                self._logger.info("Delete detection enabled for this cycle")
+
+        result = await self._sync_manager.run_incremental_sync(
+            self._sync_config, run_delete_detection=run_deletes,
+        )
 
         duration = datetime.utcnow() - start_time
 
@@ -221,11 +246,17 @@ class SyncDaemon:
         stats = [f"{result.records_processed} records"]
         if result.files_downloaded > 0:
             stats.append(f"{result.files_downloaded} files")
+        if result.files_skipped > 0:
+            stats.append(f"{result.files_skipped} skipped (unchanged)")
+        if result.orphans_cleaned > 0:
+            stats.append(f"{result.orphans_cleaned} orphans cleaned")
+        if result.records_deleted > 0:
+            stats.append(f"{result.records_deleted} deleted")
         if result.pdfs_processed > 0:
             stats.append(f"{result.pdfs_processed} PDFs ({result.pdf_pages_indexed} pages)")
 
         self._logger.info(
-            f"Sync cycle completed: {', '.join(stats)} "
+            f"Sync cycle #{self._cycle_count} completed: {', '.join(stats)} "
             f"in {duration.total_seconds():.1f}s"
         )
 
@@ -377,6 +408,8 @@ async def main() -> int:
                 download_files=args.download_files,
                 file_workers=args.file_workers,
                 process_pdfs=args.process_pdfs,
+                detect_deletes=args.detect_deletes,
+                delete_detection_interval=args.delete_interval,
             )
 
             if args.daemon:
@@ -393,15 +426,23 @@ async def main() -> int:
 
             elif args.once:
                 # Run single sync cycle
-                result = await sync_manager.run_incremental_sync(sync_config)
+                result = await sync_manager.run_incremental_sync(
+                    sync_config,
+                    run_delete_detection=args.detect_deletes,
+                )
 
                 logger.info("=" * 60)
                 logger.info(f"Sync completed: {result.status}")
                 logger.info(f"Records processed: {result.records_processed:,}")
                 logger.info(f"Records failed: {result.records_failed:,}")
-                if result.files_downloaded > 0:
+                if result.files_downloaded > 0 or result.files_skipped > 0:
                     logger.info(f"Files downloaded: {result.files_downloaded:,}")
+                    logger.info(f"Files skipped (unchanged): {result.files_skipped:,}")
                     logger.info(f"Files failed: {result.files_failed:,}")
+                if result.orphans_cleaned > 0:
+                    logger.info(f"Orphaned pdf_pages cleaned: {result.orphans_cleaned:,}")
+                if result.records_deleted > 0:
+                    logger.info(f"Records deleted: {result.records_deleted:,}")
                 if result.pdfs_processed > 0 or result.pdfs_failed > 0:
                     logger.info(f"PDFs processed: {result.pdfs_processed:,}")
                     logger.info(f"PDFs failed: {result.pdfs_failed:,}")

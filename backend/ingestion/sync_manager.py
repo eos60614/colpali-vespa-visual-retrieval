@@ -60,6 +60,8 @@ class SyncConfig:
     file_workers: int = 2
     download_dir: Optional[Path] = None
     process_pdfs: bool = False  # Process downloaded PDFs with ColPali
+    detect_deletes: bool = False  # Detect and remove deleted records
+    delete_detection_interval: int = 10  # Every Nth daemon cycle (0 = disabled)
 
 
 @dataclass
@@ -78,6 +80,9 @@ class SyncResult:
     pdfs_processed: int = 0
     pdfs_failed: int = 0
     pdf_pages_indexed: int = 0
+    files_skipped: int = 0
+    orphans_cleaned: int = 0
+    records_deleted: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -334,11 +339,19 @@ class SyncManager:
             errors=job.errors,
         )
 
-    async def run_incremental_sync(self, config: SyncConfig) -> SyncResult:
+    async def run_incremental_sync(
+        self, config: SyncConfig, run_delete_detection: bool = False,
+    ) -> SyncResult:
         """Run incremental sync from last checkpoints.
+
+        Uses conditional file processing: only downloads/processes files whose
+        references actually changed, and cleans up orphaned pdf_pages when
+        file references are removed.
 
         Args:
             config: Sync configuration
+            run_delete_detection: If True, detect and delete removed records
+                this cycle (overrides config.detect_deletes for one-shot runs)
 
         Returns:
             SyncResult with operation summary
@@ -366,9 +379,13 @@ class SyncManager:
         tables_completed = 0
         files_downloaded = 0
         files_failed = 0
+        files_skipped = 0
+        orphans_cleaned = 0
         pdfs_processed = 0
         pdfs_failed = 0
         pdf_pages_indexed = 0
+
+        should_detect_deletes = run_delete_detection or config.detect_deletes
 
         try:
             ingester = RecordIngester(
@@ -378,7 +395,6 @@ class SyncManager:
                 logger=self._logger,
             )
 
-            # Create change detector for delete detection
             change_detector = ChangeDetector(
                 db=self._db,
                 checkpoint_store=self._checkpoint_store,
@@ -391,7 +407,6 @@ class SyncManager:
             if config.download_files:
                 file_detector = FileDetector(self._schema_map, self._logger)
                 download_dir = config.download_dir or Path("data/downloads")
-                # Use DIRECT_S3 strategy with AWS credentials from environment
                 import os
                 aws_config = {
                     "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
@@ -409,7 +424,6 @@ class SyncManager:
                     self._logger.info("PDF processing enabled with ColPali")
 
             for table in tables:
-                # Get last sync time for this table
                 last_sync = await self._checkpoint_store.get_last_sync_time(table)
 
                 self._logger.info(
@@ -420,12 +434,26 @@ class SyncManager:
                 table_processed = 0
                 table_failed = 0
                 table_deleted = 0
+                table_files_skipped = 0
+                table_orphans_cleaned = 0
                 table_pdfs_processed = 0
                 table_pdfs_failed = 0
                 table_pdf_pages = 0
+                table_files_downloaded = 0
+                table_files_failed = 0
 
                 try:
-                    # Process updates and inserts
+                    # Step 1: Detect changes to categorize inserts vs updates
+                    changeset = await change_detector.detect_changes(table, since=last_sync)
+
+                    # Step 2: Pre-fetch old file references for updates BEFORE overwriting
+                    old_file_refs: dict[str, list[dict]] = {}
+                    if config.download_files and changeset.updates:
+                        for change in changeset.updates:
+                            doc_id = f"{table}:{change.record_id}"
+                            old_file_refs[doc_id] = await self._fetch_existing_file_references(doc_id)
+
+                    # Step 3: Ingest all changed records (inserts + updates)
                     async for result in ingester.ingest_table(
                         table=table,
                         batch_size=config.batch_size,
@@ -442,32 +470,145 @@ class SyncManager:
                                     f"{table}:{result.doc_id}: {result.error}"
                                 )
 
-                    # Download files for updated records if enabled
+                    # Step 4-5: Conditional file downloads
                     if config.download_files and file_detector and file_downloader:
-                        dl_count, dl_failed, pdf_count, pdf_fail, pdf_pages = await self._download_files_for_table(
-                            table=table,
-                            file_detector=file_detector,
-                            file_downloader=file_downloader,
-                            batch_size=config.batch_size,
-                            workers=config.file_workers,
-                            since=last_sync,
-                            process_pdfs=config.process_pdfs and self._pdf_processor is not None,
-                        )
-                        files_downloaded += dl_count
-                        files_failed += dl_failed
-                        table_pdfs_processed = pdf_count
-                        table_pdfs_failed = pdf_fail
-                        table_pdf_pages = pdf_pages
-                        pdfs_processed += pdf_count
-                        pdfs_failed += pdf_fail
-                        pdf_pages_indexed += pdf_pages
+                        # Build sets of insert/update record IDs for routing
+                        insert_ids = {c.record_id for c in changeset.inserts}
+                        update_ids = {c.record_id for c in changeset.updates}
 
+                        # Collect files to download, respecting diff logic
+                        files_to_download = []
+                        # Build a record_id -> change lookup from changeset
+                        change_by_id: dict[str, Any] = {}
+                        for c in changeset.inserts:
+                            change_by_id[c.record_id] = c
+                        for c in changeset.updates:
+                            change_by_id[c.record_id] = c
+
+                        for change in list(changeset.inserts) + list(changeset.updates):
+                            if change.row is None:
+                                continue
+
+                            detected = file_detector.detect_in_record(table, change.row)
+                            if not detected:
+                                continue
+
+                            if change.record_id in insert_ids:
+                                # New record: download all files
+                                files_to_download.extend(detected)
+                            elif change.record_id in update_ids:
+                                # Updated record: diff file references
+                                doc_id = f"{table}:{change.record_id}"
+                                old_refs = old_file_refs.get(doc_id, [])
+
+                                # Build new refs from detected files
+                                new_refs = [
+                                    {"s3_key": d.s3_key, "url": d.url or "", "filename": d.filename or ""}
+                                    for d in detected
+                                ]
+
+                                added, removed, unchanged = self._diff_file_references(old_refs, new_refs)
+
+                                table_files_skipped += len(unchanged)
+
+                                # Only download added files
+                                added_keys = {r.get("s3_key") or r.get("url") or "" for r in added}
+                                for d in detected:
+                                    key = d.s3_key or d.url or ""
+                                    if key in added_keys:
+                                        files_to_download.append(d)
+
+                                # Cleanup orphaned pdf_pages for removed files
+                                if removed:
+                                    cleaned = await self._cleanup_orphaned_pdf_pages(
+                                        table, change.record_id, removed,
+                                    )
+                                    table_orphans_cleaned += cleaned
+
+                        if files_to_download:
+                            self._logger.info(
+                                f"Downloading {len(files_to_download)} files from {table}"
+                                f" (skipped {table_files_skipped} unchanged)"
+                            )
+
+                            # Track downloaded PDFs for processing
+                            downloaded_pdfs: list[tuple] = []
+                            file_lookup = {f.s3_key or f.url or "": f for f in files_to_download}
+
+                            async for dl_result in file_downloader.download_batch(
+                                files_to_download, workers=config.file_workers,
+                            ):
+                                if dl_result.success:
+                                    table_files_downloaded += 1
+                                    if (
+                                        config.process_pdfs
+                                        and self._pdf_processor
+                                        and dl_result.local_path
+                                        and dl_result.local_path.suffix.lower() == ".pdf"
+                                    ):
+                                        detected_file = file_lookup.get(dl_result.s3_key)
+                                        if detected_file:
+                                            downloaded_pdfs.append((detected_file, dl_result.local_path))
+                                elif dl_result.status == "skipped":
+                                    self._logger.debug(f"Skipped: {dl_result.s3_key} - {dl_result.error}")
+                                else:
+                                    table_files_failed += 1
+                                    self._logger.warning(
+                                        f"Failed to download {dl_result.s3_key}: {dl_result.error}"
+                                    )
+
+                            # Process PDFs with ColPali if enabled
+                            if config.process_pdfs and downloaded_pdfs and self._pdf_processor:
+                                self._logger.info(f"Processing {len(downloaded_pdfs)} PDFs from {table}")
+                                results = self._pdf_processor.process_batch(downloaded_pdfs)
+                                for pdf_result in results:
+                                    if pdf_result.success:
+                                        table_pdfs_processed += 1
+                                        table_pdf_pages += pdf_result.pages_indexed
+                                    else:
+                                        table_pdfs_failed += 1
+                                        self._logger.warning(
+                                            f"Failed to process PDF {pdf_result.file.filename}: {pdf_result.error}"
+                                        )
+                        elif table_files_skipped > 0:
+                            self._logger.info(
+                                f"Skipped {table_files_skipped} files (unchanged) in {table}"
+                            )
+
+                    # Step 6: Delete detection
+                    if should_detect_deletes:
+                        vespa_ids = await self._get_vespa_record_ids(table)
+                        if vespa_ids:
+                            deleted_ids = await change_detector.detect_deletes(table, vespa_ids)
+                            if deleted_ids:
+                                # Cleanup pdf_pages for deleted records
+                                for del_id in deleted_ids:
+                                    doc_id = f"{table}:{del_id}"
+                                    old_refs = await self._fetch_existing_file_references(doc_id)
+                                    if old_refs:
+                                        cleaned = await self._cleanup_orphaned_pdf_pages(
+                                            table, del_id, old_refs,
+                                        )
+                                        table_orphans_cleaned += cleaned
+
+                                table_deleted = await self.delete_records(table, deleted_ids)
+                                records_deleted += table_deleted
+
+                    # Step 7: Save checkpoint
                     await self._save_checkpoint(
                         table=table,
                         records_processed=table_processed,
                         records_failed=table_failed,
                         status="COMPLETED",
                     )
+
+                    files_downloaded += table_files_downloaded
+                    files_failed += table_files_failed
+                    files_skipped += table_files_skipped
+                    orphans_cleaned += table_orphans_cleaned
+                    pdfs_processed += table_pdfs_processed
+                    pdfs_failed += table_pdfs_failed
+                    pdf_pages_indexed += table_pdf_pages
 
                     tables_completed += 1
                     job.progress["tables_completed"] = tables_completed
@@ -481,8 +622,12 @@ class SyncManager:
 
                     if table_processed > 0 or table_deleted > 0 or table_pdfs_processed > 0:
                         msg = f"Completed {table}: {table_processed} changes"
+                        if table_files_skipped > 0:
+                            msg += f", skipped {table_files_skipped} files (unchanged)"
                         if table_deleted > 0:
                             msg += f", {table_deleted} deleted"
+                        if table_orphans_cleaned > 0:
+                            msg += f", {table_orphans_cleaned} orphans cleaned"
                         if table_pdfs_processed > 0 or table_pdfs_failed > 0:
                             msg += f", {table_pdfs_processed} PDFs ({table_pdf_pages} pages)"
                         self._logger.info(msg)
@@ -523,6 +668,9 @@ class SyncManager:
             pdfs_processed=pdfs_processed,
             pdfs_failed=pdfs_failed,
             pdf_pages_indexed=pdf_pages_indexed,
+            files_skipped=files_skipped,
+            orphans_cleaned=orphans_cleaned,
+            records_deleted=records_deleted,
             errors=job.errors,
         )
 
@@ -684,6 +832,198 @@ class SyncManager:
             "current_job": self._current_job.job_id if self._current_job else None,
             "tables": tables_status,
         }
+
+    async def _fetch_existing_file_references(self, doc_id: str) -> list[dict]:
+        """Fetch current file_references from a Vespa procore_record document.
+
+        Args:
+            doc_id: Vespa document ID (e.g., "photos:123")
+
+        Returns:
+            List of file reference dicts, or empty list if not found
+        """
+        try:
+            response = self._vespa.get_data(
+                schema="procore_record",
+                data_id=doc_id,
+            )
+            # pyvespa get_data returns a VespaResponse; extract fields
+            if hasattr(response, "json"):
+                data = response.json
+            elif isinstance(response, dict):
+                data = response
+            else:
+                return []
+
+            fields = data.get("fields", {})
+            raw_refs = fields.get("file_references", [])
+
+            # file_references are stored as JSON strings in Vespa
+            refs = []
+            for ref in raw_refs:
+                if isinstance(ref, str):
+                    refs.append(json.loads(ref))
+                elif isinstance(ref, dict):
+                    refs.append(ref)
+            return refs
+        except Exception as e:
+            self._logger.debug(f"Could not fetch existing file refs for {doc_id}: {e}")
+            return []
+
+    @staticmethod
+    def _diff_file_references(
+        old_refs: list[dict], new_refs: list[dict]
+    ) -> tuple[list[dict], list[dict], list[dict]]:
+        """Compare old and new file references by s3_key/url.
+
+        Args:
+            old_refs: File reference dicts from Vespa
+            new_refs: File reference dicts from new record
+
+        Returns:
+            Tuple of (added, removed, unchanged) reference lists
+        """
+        def _ref_key(ref: dict) -> str:
+            return ref.get("s3_key") or ref.get("url") or ""
+
+        old_keys = {_ref_key(r) for r in old_refs}
+        new_keys = {_ref_key(r) for r in new_refs}
+
+        # Filter out empty keys
+        old_keys.discard("")
+        new_keys.discard("")
+
+        added_keys = new_keys - old_keys
+        removed_keys = old_keys - new_keys
+        unchanged_keys = old_keys & new_keys
+
+        added = [r for r in new_refs if _ref_key(r) in added_keys]
+        removed = [r for r in old_refs if _ref_key(r) in removed_keys]
+        unchanged = [r for r in old_refs if _ref_key(r) in unchanged_keys]
+
+        return added, removed, unchanged
+
+    async def _cleanup_orphaned_pdf_pages(
+        self,
+        source_table: str,
+        record_id: str,
+        removed_refs: list[dict],
+    ) -> int:
+        """Delete pdf_page documents for removed file references.
+
+        Args:
+            source_table: Source table name
+            record_id: Source record ID
+            removed_refs: List of removed file reference dicts
+
+        Returns:
+            Number of orphaned pdf_page documents deleted
+        """
+        deleted = 0
+        for ref in removed_refs:
+            s3_key = ref.get("s3_key", "")
+            filename = ref.get("filename", "")
+            if not s3_key and not filename:
+                continue
+
+            # Query Vespa for pdf_page docs matching this source record and file
+            # pdf_page doc_ids follow the pattern: {filename}_page{N}
+            # We search by title (filename) and source metadata
+            try:
+                search_term = filename or s3_key.rsplit("/", 1)[-1] if s3_key else ""
+                if not search_term:
+                    continue
+
+                response = self._vespa.query(
+                    yql=f'select documentid from pdf_page where title contains "{search_term}"',
+                    hits=1000,
+                )
+
+                if hasattr(response, "json"):
+                    data = response.json
+                elif isinstance(response, dict):
+                    data = response
+                else:
+                    continue
+
+                children = data.get("root", {}).get("children", [])
+                for child in children:
+                    doc_id = child.get("id", "")
+                    if doc_id:
+                        # Extract the Vespa document ID from the full URI
+                        # Format: id:namespace:pdf_page::actual_id
+                        parts = doc_id.split("::")
+                        vespa_id = parts[-1] if parts else doc_id
+                        try:
+                            self._vespa.delete_data(
+                                schema="pdf_page",
+                                data_id=vespa_id,
+                            )
+                            deleted += 1
+                        except Exception as e:
+                            self._logger.warning(
+                                f"Failed to delete orphaned pdf_page {vespa_id}: {e}"
+                            )
+            except Exception as e:
+                self._logger.warning(
+                    f"Failed to query orphaned pdf_pages for {source_table}:{record_id}: {e}"
+                )
+
+        if deleted > 0:
+            self._logger.info(
+                f"Cleaned up {deleted} orphaned pdf_page docs for {source_table}:{record_id}"
+            )
+        return deleted
+
+    async def _get_vespa_record_ids(self, table: str) -> set[str]:
+        """Get all source_id values from Vespa for a given table.
+
+        Uses Vespa visiting/query to retrieve all record IDs for a table.
+
+        Args:
+            table: Source table name
+
+        Returns:
+            Set of record IDs currently in Vespa
+        """
+        ids: set[str] = set()
+        offset = 0
+        batch_size = 400
+
+        while True:
+            try:
+                response = self._vespa.query(
+                    yql=f'select source_id from procore_record where source_table contains "{table}"',
+                    hits=batch_size,
+                    offset=offset,
+                )
+
+                if hasattr(response, "json"):
+                    data = response.json
+                elif isinstance(response, dict):
+                    data = response
+                else:
+                    break
+
+                children = data.get("root", {}).get("children", [])
+                if not children:
+                    break
+
+                for child in children:
+                    fields = child.get("fields", {})
+                    source_id = fields.get("source_id")
+                    if source_id:
+                        ids.add(str(source_id))
+
+                if len(children) < batch_size:
+                    break
+                offset += batch_size
+
+            except Exception as e:
+                self._logger.warning(f"Failed to query Vespa record IDs for {table}: {e}")
+                break
+
+        return ids
 
     async def _download_files_for_table(
         self,
