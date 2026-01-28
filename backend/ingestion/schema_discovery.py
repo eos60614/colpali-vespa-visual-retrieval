@@ -3,8 +3,8 @@ Database schema introspection and documentation generation.
 """
 
 import json
-import logging
 import re
+from logging import Logger
 
 from backend.logging_config import get_logger
 from dataclasses import dataclass, field
@@ -126,7 +126,7 @@ class SchemaDiscovery:
         "deleted_at",
     ]
 
-    def __init__(self, db: DatabaseConnection, logger: Optional[logging.Logger] = None):
+    def __init__(self, db: DatabaseConnection, logger: Optional[Logger] = None):
         """Initialize schema discovery.
 
         Args:

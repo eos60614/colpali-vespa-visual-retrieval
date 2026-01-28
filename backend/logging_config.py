@@ -2,7 +2,8 @@
 Centralized logging configuration for the backend.
 
 Provides structured JSON logging with correlation ID support,
-secret redaction, environment-aware behavior, and 48-hour log retention.
+secret redaction, environment-aware behavior, and rotating log files
+with cleanup of rotated files older than 48 hours.
 
 All backend modules should use:
     from backend.logging_config import get_logger
@@ -15,6 +16,7 @@ Or for the root application logger:
 
 import json
 import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -139,9 +141,6 @@ class StructuredJsonFormatter(logging.Formatter):
             entry["stackTrace"] = _redact_secrets(
                 self.formatException(record.exc_info)
             )
-        elif level in ("error", "fatal") and not record.exc_info:
-            # Capture current stack for errors logged without an exception
-            pass
 
         # Extra structured fields passed via `extra={"data": {...}}`
         if hasattr(record, "data") and isinstance(record.data, dict):
@@ -175,60 +174,57 @@ class DevelopmentFormatter(logging.Formatter):
 
 
 # ---------------------------------------------------------------------------
-# 48-hour file handler with retention
+# Rotating file handler with old-file cleanup
 # ---------------------------------------------------------------------------
 LOG_DIR = Path(os.environ.get("LOG_DIR", "logs"))
 LOG_RETENTION_HOURS = 48
+LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
+LOG_BACKUP_COUNT = 5
 
 
-class RetentionFileHandler(logging.FileHandler):
-    """File handler that enforces 48-hour log retention.
+class RetentionFileHandler(logging.handlers.RotatingFileHandler):
+    """Rotating file handler that also deletes rotated files older than 48 hours.
 
-    Logs are written to logs/app.log. On initialization and periodically,
-    old log files exceeding the retention window are cleaned up.
+    Logs are written to logs/app.log. When the file exceeds LOG_MAX_BYTES,
+    it rotates (app.log -> app.log.1, etc., up to LOG_BACKUP_COUNT backups).
+    Periodically, rotated files older than the retention window are deleted.
     """
 
-    def __init__(self, log_dir: Path = LOG_DIR, retention_hours: int = LOG_RETENTION_HOURS):
+    def __init__(
+        self,
+        log_dir: Path = LOG_DIR,
+        retention_hours: int = LOG_RETENTION_HOURS,
+    ):
         log_dir.mkdir(parents=True, exist_ok=True)
-        self.log_file = log_dir / "app.log"
         self.log_dir = log_dir
         self.retention_hours = retention_hours
         self._last_cleanup = 0.0
         self._cleanup_interval = 3600  # Check every hour
-        super().__init__(str(self.log_file), mode="a", encoding="utf-8")
+        super().__init__(
+            str(log_dir / "app.log"),
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
         self._cleanup_old_logs()
 
     def emit(self, record: logging.LogRecord) -> None:
         super().emit(record)
         now = time.time()
         if now - self._last_cleanup > self._cleanup_interval:
-            self._last_cleanup = now
             self._cleanup_old_logs()
 
     def _cleanup_old_logs(self) -> None:
-        """Remove log entries and files older than retention_hours.
-
-        Retention enforced at 48 hours (configurable). This method:
-        1. Removes any rotated log files beyond retention
-        2. Truncates the main log file to only keep recent entries
-        """
+        """Remove rotated log files older than retention_hours."""
         self._last_cleanup = time.time()
         cutoff = time.time() - (self.retention_hours * 3600)
 
-        # Clean up any rotated log files
         for log_file in self.log_dir.glob("app.log.*"):
             try:
                 if log_file.stat().st_mtime < cutoff:
                     log_file.unlink()
             except OSError:
                 pass
-
-        # Truncate main log if it's older than retention
-        try:
-            if self.log_file.exists() and self.log_file.stat().st_mtime < cutoff:
-                self.log_file.write_text("")
-        except OSError:
-            pass
 
 
 # ---------------------------------------------------------------------------

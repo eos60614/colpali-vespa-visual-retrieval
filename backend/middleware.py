@@ -83,15 +83,16 @@ class ErrorBoundaryMiddleware:
                 exc_info=True,
             )
 
-            # Build sanitized response
+            # Build sanitized response (use json.dumps to escape cid properly)
+            import json
+
             if is_production():
-                body = (
-                    b'{"error": "Internal server error", '
-                    b'"correlationId": "' + cid.encode() + b'"}'
-                )
+                body = json.dumps({
+                    "error": "Internal server error",
+                    "correlationId": cid,
+                }).encode()
             else:
                 # Development: include error details for debugging
-                import json
                 body = json.dumps({
                     "error": str(exc),
                     "correlationId": cid,

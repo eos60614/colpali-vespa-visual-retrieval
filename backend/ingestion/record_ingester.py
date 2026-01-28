@@ -3,8 +3,8 @@ Record extraction, transformation, and Vespa indexing.
 """
 
 import json
-import logging
 from dataclasses import dataclass, field
+from logging import Logger
 
 from backend.logging_config import get_logger
 from datetime import datetime
@@ -201,7 +201,7 @@ class RecordIngester:
         db: DatabaseConnection,
         vespa_app: Any,
         schema_map: SchemaMap,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
     ):
         """Initialize record ingester.
 

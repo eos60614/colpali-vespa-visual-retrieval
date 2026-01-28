@@ -107,8 +107,10 @@ app, rt = fast_app(
 )
 
 # Install ASGI middleware: error boundary (outermost) → correlation ID → app
-app = CorrelationIdMiddleware(app)
-app = ErrorBoundaryMiddleware(app)
+# Keep `app` as the FastHTML instance for route registration and attribute access.
+# `asgi_app` is the ASGI callable with middleware, used by uvicorn.
+asgi_app = CorrelationIdMiddleware(app)
+asgi_app = ErrorBoundaryMiddleware(asgi_app)
 
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
@@ -764,7 +766,7 @@ if __name__ == "__main__":
     HOT_RELOAD = get("app", "hot_reload")
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
     uvicorn.run(
-        "main:app",
+        "main:asgi_app",
         host=get("app", "host"),
         timeout_worker_healthcheck=get("app", "healthcheck_timeout"),
         port=get("app", "port"),

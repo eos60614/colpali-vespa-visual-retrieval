@@ -2,8 +2,8 @@
 Change detection for incremental sync operations.
 """
 
-import logging
 from dataclasses import dataclass, field
+from logging import Logger
 
 from backend.logging_config import get_logger
 from datetime import datetime, timezone
@@ -52,7 +52,7 @@ class ChangeDetector:
         self,
         db: DatabaseConnection,
         checkpoint_store: CheckpointStore,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
         schema_map: Optional[SchemaMap] = None,
     ):
         """Initialize change detector.

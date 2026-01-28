@@ -4,8 +4,8 @@ PDF processing for database-ingested files.
 Integrates the ColPali PDF processing system with the database ingestion pipeline.
 """
 
-import logging
 from dataclasses import dataclass
+from logging import Logger
 
 from backend.logging_config import get_logger
 from pathlib import Path
@@ -35,7 +35,7 @@ class PDFProcessor:
     def __init__(
         self,
         vespa_app: Any,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
         batch_size: int = None,
     ):
         """Initialize PDF processor.

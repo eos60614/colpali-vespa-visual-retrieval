@@ -2,8 +2,8 @@
 Checkpoint persistence for sync state using SQLite.
 """
 
-import logging
 from dataclasses import dataclass
+from logging import Logger
 
 from backend.logging_config import get_logger
 from datetime import datetime, timezone
@@ -30,7 +30,7 @@ class Checkpoint:
 class CheckpointStore:
     """Persist sync checkpoints in SQLite."""
 
-    def __init__(self, db_path: Path, logger: Optional[logging.Logger] = None):
+    def __init__(self, db_path: Path, logger: Optional[Logger] = None):
         """Initialize checkpoint store.
 
         Args:
