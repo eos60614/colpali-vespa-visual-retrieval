@@ -34,7 +34,7 @@ export function SourcePanel({
           Ready to search
         </h3>
         <p className="text-xs text-[var(--text-tertiary)] max-w-[240px]">
-          Ask a question above and CoPoly will find the most relevant document pages.
+          Ask a question above and KI55 will find the most relevant document pages.
         </p>
       </div>
     );

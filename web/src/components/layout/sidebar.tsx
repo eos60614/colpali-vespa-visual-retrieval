@@ -90,7 +90,7 @@ export function Sidebar({
           <div className="w-7 h-7 rounded-[var(--radius-md)] bg-gradient-to-br from-[#d97756] to-[#b85636] flex items-center justify-center">
             <Layers className="h-3.5 w-3.5 text-white" />
           </div>
-          <span className="font-semibold text-sm tracking-tight">CoPoly</span>
+          <span className="font-semibold text-sm tracking-tight">KI55</span>
           <span className="text-[10px] text-[var(--text-tertiary)] font-mono bg-[var(--bg-tertiary)] px-1.5 py-0.5 rounded">
             2025
           </span>

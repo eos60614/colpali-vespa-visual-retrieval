@@ -64,7 +64,7 @@ src/
 
 ### State Management
 
-**Zustand store** (`lib/store.ts`) — persisted to localStorage under `copoly-storage`:
+**Zustand store** (`lib/store.ts`) — persisted to localStorage under `ki55-storage`:
 - `recentQueries` (max 20), `selectedProjectId`, `ranking` (`hybrid`/`colpali`/`bm25`), `isDark`
 
 **Custom hooks** for domain logic:

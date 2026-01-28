@@ -46,7 +46,7 @@ export const useAppStore = create<AppState>()(
       toggleTheme: () => set((state) => ({ isDark: !state.isDark })),
     }),
     {
-      name: "copoly-storage",
+      name: "ki55-storage",
       partialize: (state) => ({
         recentQueries: state.recentQueries,
         selectedProjectId: state.selectedProjectId,

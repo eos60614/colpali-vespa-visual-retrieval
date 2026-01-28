@@ -130,7 +130,7 @@ export function Workspace() {
                   ) : (
                     "your construction documents"
                   )}
-                  . CoPoly retrieves the exact pages you need, then explains what&apos;s on them.
+                  . KI55 retrieves the exact pages you need, then explains what&apos;s on them.
                 </p>
               </div>
               <QueryInput

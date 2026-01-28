@@ -18,7 +18,7 @@ export function useSearch() {
   const [recentQueries, setRecentQueries] = useState<RecentQuery[]>(() => {
     if (typeof window === "undefined") return [];
     try {
-      return JSON.parse(localStorage.getItem("copoly_recent_queries") || "[]");
+      return JSON.parse(localStorage.getItem("ki55_recent_queries") || "[]");
     } catch {
       return [];
     }
@@ -41,7 +41,7 @@ export function useSearch() {
         const filtered = prev.filter((rq) => rq.query !== q);
         const updated = [newEntry, ...filtered].slice(0, 20);
         try {
-          localStorage.setItem("copoly_recent_queries", JSON.stringify(updated));
+          localStorage.setItem("ki55_recent_queries", JSON.stringify(updated));
         } catch {
           // localStorage full or unavailable
         }
