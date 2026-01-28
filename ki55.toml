@@ -175,7 +175,7 @@ s3_default_bucket = "procore-files"
 s3_default_region = "us-east-1"
 
 [ingestion.sync]
-default_exclude = ["_prisma_migrations", "sync_events", "webhook_*"]
+default_exclude = ["_prisma_migrations", "sync_events", "webhook_*", "api_credentials", "integration_*", "processed_webhook_events", "audit_records"]
 delete_detection_interval = 10
 sync_interval_seconds = 300
 vespa_id_query_batch_size = 400

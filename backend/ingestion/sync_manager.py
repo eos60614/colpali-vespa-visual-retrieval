@@ -128,6 +128,20 @@ class SyncManager:
         self._pdf_processor = pdf_processor
         self._current_job: Optional[IngestionJob] = None
 
+    # Preferred timestamp columns in order of priority
+    TIMESTAMP_COLUMNS = ["updated_at", "last_synced_at", "created_at"]
+
+    def _get_timestamp_column(self, table: str) -> str:
+        """Get the best timestamp column for a table from schema map."""
+        table_info = next(
+            (t for t in self._schema_map.tables if t.name == table), None
+        )
+        if table_info:
+            for preferred in self.TIMESTAMP_COLUMNS:
+                if preferred in table_info.timestamp_columns:
+                    return preferred
+        return "updated_at"
+
     def get_tables_to_sync(self, config: SyncConfig) -> list[str]:
         """Get list of tables to sync based on config.
 
@@ -404,6 +418,7 @@ class SyncManager:
                 db=self._db,
                 checkpoint_store=self._checkpoint_store,
                 logger=self._logger,
+                schema_map=self._schema_map,
             )
 
             # Create file detector and downloader if enabled
@@ -800,6 +815,7 @@ class SyncManager:
             db=self._db,
             checkpoint_store=self._checkpoint_store,
             logger=self._logger,
+            schema_map=self._schema_map,
         )
 
         deleted_ids = await change_detector.detect_deletes(table, known_ids)
@@ -1060,9 +1076,10 @@ class SyncManager:
         pdfs_failed = 0
         pdf_pages_indexed = 0
 
-        # Build query
+        # Build query using best available timestamp column
         if since:
-            query = f'SELECT * FROM "{table}" WHERE updated_at > $1'
+            ts_col = self._get_timestamp_column(table)
+            query = f'SELECT * FROM "{table}" WHERE "{ts_col}" > $1'
             args = (since,)
         else:
             query = f'SELECT * FROM "{table}"'

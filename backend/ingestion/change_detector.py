@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Optional, Set
 
 from backend.ingestion.checkpoint import CheckpointStore
 from backend.ingestion.db_connection import DatabaseConnection
+from backend.ingestion.schema_discovery import SchemaMap
 
 
 @dataclass
@@ -50,6 +51,7 @@ class ChangeDetector:
         db: DatabaseConnection,
         checkpoint_store: CheckpointStore,
         logger: Optional[logging.Logger] = None,
+        schema_map: Optional[SchemaMap] = None,
     ):
         """Initialize change detector.
 
@@ -57,10 +59,16 @@ class ChangeDetector:
             db: Database connection instance
             checkpoint_store: Checkpoint persistence store
             logger: Optional logger instance
+            schema_map: Optional schema map for timestamp column lookup
         """
         self._db = db
         self._checkpoint_store = checkpoint_store
         self._logger = logger or logging.getLogger(__name__)
+        # Build per-table timestamp column lookup from schema
+        self._table_timestamp_columns: dict[str, list[str]] = {}
+        if schema_map:
+            for table in schema_map.tables:
+                self._table_timestamp_columns[table.name] = table.timestamp_columns
 
     async def detect_changes(
         self,
@@ -192,14 +200,20 @@ class ChangeDetector:
     def get_timestamp_column(self, table: str) -> str:
         """Get the best timestamp column for change detection.
 
+        Checks available columns from schema discovery and picks the best
+        option in priority order: updated_at > last_synced_at > created_at.
+
         Args:
             table: Table name
 
         Returns:
             Name of the timestamp column to use
         """
-        # For now, use updated_at as default
-        # In production, this could query information_schema to verify column exists
+        available = self._table_timestamp_columns.get(table, [])
+        for preferred in self.TIMESTAMP_COLUMNS:
+            if preferred in available:
+                return preferred
+        # Fallback to updated_at if no schema info available
         return "updated_at"
 
     async def get_table_id_set(self, table: str) -> Set[str]:

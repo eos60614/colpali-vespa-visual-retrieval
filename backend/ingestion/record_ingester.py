@@ -116,15 +116,38 @@ CONTENT_FIELDS = {
     "photos": ["description", "location"],
     "drawings": ["drawing_number", "title", "discipline"],
     "drawing_revisions": ["revision_number", "filename"],
+    "drawing_areas": ["name"],
+    "drawing_sets": ["name"],
     "rfis": ["number", "subject", "question"],
     "submittals": ["number", "title", "description"],
+    "submittal_attachments": ["filename", "content_type"],
     "change_orders": ["number", "title", "description"],
-    "commitment_contracts": ["number", "title", "description"],
-    "vendors": ["name", "company"],
-    "companies": ["name"],
-    "budget_line_items": ["description", "code"],
-    "direct_costs": ["description"],
-    "specification_sections": ["number", "title"],
+    "change_events": ["title", "description", "status", "event_type", "change_reason"],
+    "commitment_contracts": ["number", "title", "description", "status"],
+    "commitment_contract_items": ["description", "uom"],
+    "commitment_change_orders": ["number", "title", "description", "status"],
+    "commitment_change_order_items": ["description", "uom"],
+    "prime_contracts": ["number", "title", "description", "status"],
+    "prime_contract_change_orders": ["number", "title", "description", "status"],
+    "prime_contract_line_items": ["description"],
+    "owner_invoices": ["invoice_number", "status"],
+    "vendors": ["name", "abbreviated_name", "trade_name"],
+    "company_users": ["name", "job_title", "email_address"],
+    "project_users": [],
+    "project_roles": ["role_name", "user_name"],
+    "budget_line_items": ["description", "cost_code_name", "root_cost_code_name"],
+    "budget_views": ["name", "view_type"],
+    "direct_costs": ["description", "invoice_number", "direct_cost_type"],
+    "direct_cost_items": ["description", "uom", "ref"],
+    "requisitions": ["invoice_number", "status", "vendor_name", "comment"],
+    "invoice_submissions": ["invoice_number", "status"],
+    "specification_sections": ["number", "label", "description"],
+    "specification_section_divisions": ["number", "description"],
+    "specification_section_revisions": ["number", "description", "revision", "filename"],
+    "daily_logs": ["log_type", "description"],
+    "timesheets": ["name", "number", "status"],
+    "vendor_insurances": ["name", "insurance_type", "policy_number", "status"],
+    "documents": ["name", "file_type"],
 }
 
 
@@ -134,29 +157,41 @@ class RecordIngester:
     # Human-readable table descriptions for agent context
     TABLE_DESCRIPTIONS = {
         "projects": "Construction projects with location, dates, and status",
-        "photos": "Site photos with descriptions and locations",
-        "drawings": "Project drawings with discipline and drawing numbers",
-        "drawing_revisions": "Revisions of drawings with version history",
-        "drawing_sets": "Collections of related drawings",
+        "photos": "Site photos with descriptions, locations, and S3 file references",
+        "drawings": "Project drawings with discipline codes and drawing numbers",
+        "drawing_revisions": "Revisions of drawings with version history and S3 file references",
+        "drawing_sets": "Collections of related drawings grouped by set date",
         "drawing_areas": "Areas within a project for drawing organization",
-        "rfis": "Requests for Information with questions and responses",
-        "submittals": "Submittals for approval with attachments",
-        "change_orders": "Contract change orders with financial details",
-        "commitment_contracts": "Vendor contracts with payment terms",
-        "commitment_contract_items": "Line items within commitment contracts",
-        "commitment_change_orders": "Change orders to commitment contracts",
-        "prime_contracts": "Prime contracts with the owner",
-        "vendors": "Vendor/subcontractor companies",
-        "companies": "Company entities in the system",
-        "budget_line_items": "Budget line items with costs",
-        "direct_costs": "Direct cost entries",
-        "specification_sections": "Specification document sections",
-        "specification_section_revisions": "Revisions of specification sections",
-        "timesheets": "Worker timesheet entries",
-        "daily_logs": "Daily log entries with site activities",
-        "project_users": "Users assigned to projects",
-        "project_roles": "Roles defined for projects",
-        "company_users": "Users within companies",
+        "rfis": "Requests for Information with questions, responses, and attachments",
+        "submittals": "Submittals for approval with attachments and revision tracking",
+        "submittal_attachments": "File attachments linked to submittals with S3 references",
+        "change_orders": "Contract change orders with cost and schedule impact",
+        "change_events": "Change events linked to RFIs with line items and RFQs",
+        "commitment_contracts": "Vendor/subcontractor contracts with payment terms and retainage",
+        "commitment_contract_items": "Line items within vendor commitment contracts",
+        "commitment_change_orders": "Change orders to vendor commitment contracts",
+        "commitment_change_order_items": "Line items within commitment change orders",
+        "prime_contracts": "Prime contracts with the owner including financial totals and dates",
+        "prime_contract_change_orders": "Change orders to prime contracts with financial details",
+        "prime_contract_line_items": "Line items within prime contracts",
+        "owner_invoices": "Owner billing documents (AIA G702) with payment and retainage details",
+        "vendors": "Vendor/subcontractor companies with contact and qualification info",
+        "company_users": "Users within companies with contact info and roles",
+        "project_users": "Users assigned to projects with permission templates",
+        "project_roles": "Roles defined for projects linking users to role names",
+        "budget_line_items": "Budget line items with cost codes and forecast amounts",
+        "budget_views": "Budget presentation views for projects",
+        "direct_costs": "Direct cost entries with vendor linkage and invoice details",
+        "direct_cost_items": "Line items within direct costs with cost codes",
+        "requisitions": "Invoice requisitions for payment with billing periods",
+        "invoice_submissions": "External invoice submission tracking with retry logic",
+        "specification_sections": "Specification document sections with CSI numbering",
+        "specification_section_divisions": "Division-level organization for spec sections",
+        "specification_section_revisions": "Revisions of specification sections with S3 file references",
+        "daily_logs": "Daily log entries with site activities and location data",
+        "timesheets": "Worker timesheet entries with timecard data",
+        "vendor_insurances": "Insurance certificates for vendors with expiration tracking",
+        "documents": "Document hierarchy with folder support and file references",
     }
 
     def __init__(
@@ -229,6 +264,27 @@ class RecordIngester:
             lookup[table.name] = {col.name: col.data_type for col in table.columns}
         return lookup
 
+    # Preferred timestamp columns in order of priority
+    TIMESTAMP_COLUMNS = ["updated_at", "last_synced_at", "created_at"]
+
+    def _get_timestamp_column(self, table: str) -> str:
+        """Get the best timestamp column for a table.
+
+        Args:
+            table: Table name
+
+        Returns:
+            Name of the best available timestamp column
+        """
+        table_info = next(
+            (t for t in self._schema_map.tables if t.name == table), None
+        )
+        if table_info:
+            for preferred in self.TIMESTAMP_COLUMNS:
+                if preferred in table_info.timestamp_columns:
+                    return preferred
+        return "updated_at"
+
     async def ingest_table(
         self,
         table: str,
@@ -248,12 +304,13 @@ class RecordIngester:
         if batch_size is None:
             batch_size = get("ingestion", "default_batch_size")
 
-        # Build query
+        # Build query using the best available timestamp column
         if since:
+            ts_col = self._get_timestamp_column(table)
             query = f"""
                 SELECT * FROM "{table}"
-                WHERE updated_at > $1
-                ORDER BY updated_at ASC
+                WHERE "{ts_col}" > $1
+                ORDER BY "{ts_col}" ASC
             """
             args = (since,)
         else:
