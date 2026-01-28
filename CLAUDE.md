@@ -83,7 +83,9 @@ Browser → HTMX requests → FastHTML (main.py)
 
 **`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
-**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events. **Note:** imports from `backend.llm_config` which does not yet exist — this module needs to be created to extract LLM config functions from main.py.
+**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events.
+
+**`backend/llm_config.py`** — LLM provider configuration. Exports `resolve_llm_config()`, `get_chat_model()`, `is_remote_api()`, `build_auth_headers()`. Used by both `main.py` (chat endpoint) and `agent.py` (agent reasoning loop).
 
 **`backend/models/config.py`** — Model registry. Two models defined: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
 

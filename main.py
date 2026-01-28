@@ -35,6 +35,7 @@ from vespa.application import Vespa
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.llm_config import resolve_llm_config, get_chat_model
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -114,25 +115,8 @@ app, rt = fast_app(
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
 # Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
-
-def _resolve_llm_config():
-    """Resolve LLM base URL and API key from environment variables."""
-    explicit_base = os.getenv("LLM_BASE_URL")
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    if explicit_base:
-        base_url = explicit_base
-    elif openai_key and not openrouter_key:
-        base_url = "https://api.openai.com/v1"
-    else:
-        base_url = "https://openrouter.ai/api/v1"
-
-    api_key = openrouter_key or openai_key or ""
-    return base_url, api_key
-
-LLM_BASE_URL, LLM_API_KEY = _resolve_llm_config()
-CHAT_MODEL = os.getenv("CHAT_MODEL", "google/gemini-2.5-flash")
+LLM_BASE_URL, LLM_API_KEY = resolve_llm_config()
+CHAT_MODEL = get_chat_model()
 CHAT_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images.
 If the user query can not be interpreted as a question, or if the answer to the query can not be inferred from the images,
 answer with the exact phrase "I am sorry, I can't find enough relevant information on these pages to answer your question.".
