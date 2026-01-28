@@ -133,18 +133,28 @@ def _resolve_llm_config():
 
 LLM_BASE_URL, LLM_API_KEY = _resolve_llm_config()
 CHAT_MODEL = os.getenv("CHAT_MODEL", "google/gemini-2.5-flash")
-CHAT_SYSTEM_PROMPT = """If the user query is a question, try your best to answer it based on the provided images.
-If the user query can not be interpreted as a question, or if the answer to the query can not be inferred from the images,
-answer with the exact phrase "I am sorry, I can't find enough relevant information on these pages to answer your question.".
-Your response should be HTML formatted, but only simple tags, such as <b>. <p>, <i>, <br> <ul> and <li> are allowed. No HTML tables.
-This means that newlines will be replaced with <br> tags, bold text will be enclosed in <b> tags, and so on.
-Do NOT include backticks (`) in your response. Only simple HTML tags and text.
+CHAT_SYSTEM_PROMPT = """You are a document research assistant. You MUST answer the user's question using ONLY the provided document pages. Do NOT use outside knowledge.
+
+STRICT RULES:
+1. Base your answer EXCLUSIVELY on the content visible in the provided document images and text extracts. Never supplement with general knowledge.
+2. ALWAYS cite your sources. For every claim, reference the specific document and page where you found it using this format: <b>(Source: [Document Title], Page [N])</b>
+3. If the documents do not contain enough information to answer the question, respond with exactly: "I could not find enough information in the provided documents to answer this question."
+4. If only partial information is available, answer what you can from the documents, clearly state what is not covered, and still cite every claim.
+5. Each document image is labeled with its title and page number. Use these labels in your citations.
+
+RESPONSE FORMAT:
+- Use only these HTML tags: <b>, <p>, <i>, <br>, <ul>, <li>. No HTML tables.
+- Do NOT include backticks (`) or markdown formatting.
+- End your response with a <b>Sources</b> section listing each document and page you referenced.
 """
 STATIC_DIR = Path("static")
 IMG_DIR = STATIC_DIR / "full_images"
 SIM_MAP_DIR = STATIC_DIR / "sim_maps"
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(SIM_MAP_DIR, exist_ok=True)
+
+# In-memory cache: query_id -> list of doc metadata dicts for chat grounding
+_query_result_metadata: dict[str, list[dict]] = {}
 
 
 @app.on_event("startup")
@@ -370,6 +380,18 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
 
     search_results = vespa_app.results_to_search_results(result, idx_to_token)
 
+    # Cache document metadata for chat grounding (title, page, snippet per result)
+    _query_result_metadata[str(query_id)] = [
+        {
+            "doc_id": r["fields"].get("id", ""),
+            "title": r["fields"].get("title", "Unknown"),
+            "page_number": r["fields"].get("page_number", 0) + 1,
+            "snippet": (r["fields"].get("snippet", "") or "")[:300],
+            "text": (r["fields"].get("text", "") or "")[:500],
+        }
+        for r in search_results
+    ]
+
     get_and_store_sim_maps(
         query_id=query_id,
         query=query,
@@ -540,9 +562,26 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     def replace_newline_with_br(text):
         return text.replace("\n", "<br>")
 
+    # Build document context from cached metadata
+    doc_metadata = _query_result_metadata.get(query_id, [])
+    context_lines = []
+    for i, meta in enumerate(doc_metadata[:len(images)]):
+        context_lines.append(
+            f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
+        )
+        if meta.get("text"):
+            context_lines.append(f"  Text extract: {meta['text'][:300]}")
+    doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
+
     # Build image content blocks for OpenAI-compatible vision API
     content_parts = []
-    for img in images:
+    for i, img in enumerate(images):
+        meta_label = ""
+        if i < len(doc_metadata):
+            m = doc_metadata[i]
+            meta_label = f"[Document {i+1}: \"{m['title']}\", Page {m['page_number']}]"
+        if meta_label:
+            content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=85)
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -550,7 +589,8 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         })
-    content_parts.append({"type": "text", "text": f"\n\n Query: {query}"})
+
+    content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
 
     headers = {"Content-Type": "application/json"}
     if LLM_API_KEY:
