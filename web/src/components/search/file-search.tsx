@@ -1,41 +1,73 @@
 "use client";
 
-import { useState, useMemo } from "react";
-import { Search, FileText, Hash, Tag, ChevronRight, Plus, Check } from "lucide-react";
+import { useState, useMemo, useEffect } from "react";
+import { Search, FileText, Hash, Loader2, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { CATEGORY_LABELS, CATEGORY_COLORS, type Document, type DocumentCategory } from "@/types";
-
-const DEMO_DOCUMENTS: Document[] = [
-  { id: "doc-1", title: "MEP Drawings — Fire Protection", documentNumber: "M-401", category: "drawing", pageCount: 24, uploadedAt: "2025-01-05", tags: ["MEP", "fire protection"] },
-  { id: "doc-2", title: "Structural Steel Connection Details", documentNumber: "S-302", category: "drawing", pageCount: 18, uploadedAt: "2025-01-04", tags: ["structural", "steel"] },
-  { id: "doc-3", title: "RFI #287 — Fire Damper Installation", documentNumber: "RFI-287", category: "rfi", pageCount: 3, uploadedAt: "2025-01-10", tags: ["fire damper", "mechanical"] },
-  { id: "doc-4", title: "RFI #312 — Concrete Pour Sequence", documentNumber: "RFI-312", category: "rfi", pageCount: 2, uploadedAt: "2025-01-12", tags: ["concrete", "schedule"] },
-  { id: "doc-5", title: "Specification Section 23 33 00 — Ductwork", documentNumber: "23-33-00", category: "spec", pageCount: 15, uploadedAt: "2024-12-20", tags: ["ductwork", "HVAC"] },
-  { id: "doc-6", title: "Submittal #145 — Ruskin FSD60 Fire Damper", documentNumber: "SUB-145", category: "submittal", pageCount: 8, uploadedAt: "2025-01-08", tags: ["fire damper", "Ruskin"] },
-  { id: "doc-7", title: "Change Order #19 — Foundation Redesign", documentNumber: "CO-019", category: "change_order", pageCount: 5, uploadedAt: "2025-01-11", tags: ["foundation", "redesign"] },
-  { id: "doc-8", title: "Architectural Floor Plan — Level 3", documentNumber: "A-103", category: "drawing", pageCount: 1, uploadedAt: "2024-11-15", tags: ["floor plan", "Level 3"] },
-];
+import { CATEGORY_LABELS, CATEGORY_COLORS, type Document } from "@/types";
+import { getDocuments } from "@/lib/api-client";
 
 interface FileSearchProps {
   selectedDocumentIds: string[];
   onToggleDocument: (id: string) => void;
+  projectId?: string;
 }
 
-export function FileSearch({ selectedDocumentIds, onToggleDocument }: FileSearchProps) {
+export function FileSearch({ selectedDocumentIds, onToggleDocument, projectId }: FileSearchProps) {
   const [filter, setFilter] = useState("");
+  const [documents, setDocuments] = useState<Document[]>([]);
+  const [loading, setLoading] = useState(false);
 
+  // Fetch documents from the backend when projectId or filter changes
+  useEffect(() => {
+    let cancelled = false;
+
+    const params: { projectId?: string; search?: string; limit?: number } = {
+      limit: 50,
+    };
+    if (projectId) params.projectId = projectId;
+    if (filter.trim()) params.search = filter.trim();
+
+    const fetchDocs = () => {
+      if (cancelled) return;
+      setLoading(true);
+      getDocuments(params)
+        .then((data) => {
+          if (!cancelled) {
+            setDocuments(data.documents || []);
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            console.error("Failed to fetch documents:", err);
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    };
+
+    // Debounce when search filter is active
+    const timeoutId = setTimeout(fetchDocs, filter.trim() ? 300 : 0);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [projectId, filter]);
+
+  // Client-side filtering for instant name/number/tag matching
   const filteredDocs = useMemo(() => {
-    if (!filter.trim()) return DEMO_DOCUMENTS;
+    if (!filter.trim()) return documents;
     const q = filter.toLowerCase();
-    return DEMO_DOCUMENTS.filter(
+    return documents.filter(
       (d) =>
         d.title.toLowerCase().includes(q) ||
         d.documentNumber?.toLowerCase().includes(q) ||
         d.tags.some((t) => t.toLowerCase().includes(q))
     );
-  }, [filter]);
+  }, [filter, documents]);
 
   return (
     <div className="border-t border-[var(--border-primary)] bg-[var(--bg-primary)]">
@@ -49,7 +81,13 @@ export function FileSearch({ selectedDocumentIds, onToggleDocument }: FileSearch
         />
       </div>
       <div className="max-h-48 overflow-y-auto px-2 pb-2 space-y-0.5">
-        {filteredDocs.map((doc) => {
+        {loading && (
+          <div className="flex items-center justify-center py-4 text-xs text-[var(--text-tertiary)]">
+            <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />
+            Loading documents...
+          </div>
+        )}
+        {!loading && filteredDocs.map((doc) => {
           const isSelected = selectedDocumentIds.includes(doc.id);
           return (
             <button
@@ -88,20 +126,25 @@ export function FileSearch({ selectedDocumentIds, onToggleDocument }: FileSearch
                       {doc.documentNumber}
                     </span>
                   )}
-                  <span className="text-[10px] text-[var(--text-tertiary)]">
-                    {doc.pageCount}p
-                  </span>
+                  {doc.pageCount > 0 && (
+                    <span className="text-[10px] text-[var(--text-tertiary)]">
+                      {doc.pageCount}p
+                    </span>
+                  )}
                 </div>
               </div>
               <Badge variant="default" className="text-[10px] shrink-0">
-                {CATEGORY_LABELS[doc.category]}
+                {CATEGORY_LABELS[doc.category] || doc.category}
               </Badge>
             </button>
           );
         })}
-        {filteredDocs.length === 0 && (
+        {!loading && filteredDocs.length === 0 && (
           <div className="text-center py-4 text-xs text-[var(--text-tertiary)]">
-            No documents match &ldquo;{filter}&rdquo;
+            {filter.trim()
+              ? <>No documents match &ldquo;{filter}&rdquo;</>
+              : "No documents found for this project"
+            }
           </div>
         )}
       </div>

@@ -32,7 +32,7 @@ from PIL import Image
 from shad4fast import ShadHead
 from vespa.application import Vespa
 
-from backend.config import get
+from backend import config
 from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
@@ -65,28 +65,28 @@ highlight_js = HighlightJS(
 
 overlayscrollbars_link = Link(
     rel="stylesheet",
-    href=get("app", "cdn", "overlayscrollbars_css"),
+    href=config.get("app", "cdn", "overlayscrollbars_css"),
     type="text/css",
 )
 overlayscrollbars_js = Script(
-    src=get("app", "cdn", "overlayscrollbars_js")
+    src=config.get("app", "cdn", "overlayscrollbars_js")
 )
 awesomplete_link = Link(
     rel="stylesheet",
-    href=get("app", "cdn", "awesomplete_css"),
+    href=config.get("app", "cdn", "awesomplete_css"),
     type="text/css",
 )
 awesomplete_js = Script(
-    src=get("app", "cdn", "awesomplete_js")
+    src=config.get("app", "cdn", "awesomplete_js")
 )
 sselink = Script(
-    src=get("app", "cdn", "htmx_sse_js"),
-    integrity=get("app", "cdn", "htmx_sse_integrity"),
+    src=config.get("app", "cdn", "htmx_sse_js"),
+    integrity=config.get("app", "cdn", "htmx_sse_integrity"),
     crossorigin="anonymous",
 )
 
 # Get log level from config
-LOG_LEVEL = get("app", "log_level").upper()
+LOG_LEVEL = config.get("app", "log_level").upper()
 # Configure logger
 logger = logging.getLogger("vespa_app")
 handler = logging.StreamHandler(sys.stdout)
@@ -133,9 +133,9 @@ RESPONSE FORMAT:
 - Do NOT include backticks (`) or markdown formatting.
 - End your response with a <b>Sources</b> section listing each document and page you referenced.
 """
-STATIC_DIR = Path(get("app", "static_dir"))
-IMG_DIR = Path(get("app", "img_dir"))
-SIM_MAP_DIR = Path(get("app", "sim_map_dir"))
+STATIC_DIR = Path(config.get("app", "static_dir"))
+IMG_DIR = Path(config.get("app", "img_dir"))
+SIM_MAP_DIR = Path(config.get("app", "sim_map_dir"))
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(SIM_MAP_DIR, exist_ok=True)
 
@@ -177,7 +177,7 @@ def get():
     return Layout(Main(AboutThisDemo()))
 
 
-MAX_FILE_SIZE = get("app", "max_file_size_mb") * 1024 * 1024
+MAX_FILE_SIZE = config.get("app", "max_file_size_mb") * 1024 * 1024
 
 
 @rt("/upload")
@@ -234,22 +234,22 @@ async def post(
     if tags.strip():
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         # Validate tag count
-        max_tags = get("app", "validation", "max_tags")
+        max_tags = config.get("app", "validation", "max_tags")
         if len(tag_list) > max_tags:
             return UploadError(f"Maximum {max_tags} tags allowed")
         # Validate individual tag length
-        max_tag_length = get("app", "validation", "max_tag_length")
+        max_tag_length = config.get("app", "validation", "max_tag_length")
         for tag in tag_list:
             if len(tag) > max_tag_length:
                 return UploadError(f"Each tag must be {max_tag_length} characters or less")
 
     # Validate title length
-    max_title_length = get("app", "validation", "max_title_length")
+    max_title_length = config.get("app", "validation", "max_title_length")
     if len(title) > max_title_length:
         return UploadError(f"Title must be {max_title_length} characters or less")
 
     # Validate description length
-    max_desc_length = get("app", "validation", "max_description_length")
+    max_desc_length = config.get("app", "validation", "max_description_length")
     if len(description) > max_desc_length:
         return UploadError(f"Description must be {max_desc_length} characters or less")
 
@@ -335,7 +335,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
     # Parse rerank parameter (default to True for better results)
     do_rerank = rerank.lower() in ("true", "1", "yes")
     do_llm_rerank = is_llm_rerank_enabled()
-    final_hits = get("search", "final_hits")
+    final_hits = config.get("search", "final_hits")
 
     # Get the hash of the query and ranking value
     query_id = generate_query_id(query, ranking)
@@ -364,7 +364,7 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=do_rerank,
-        rerank_hits=get("search", "rerank_hits"),
+        rerank_hits=config.get("search", "rerank_hits"),
         final_hits=maxsim_final_hits,  # More candidates when LLM reranking follows
     )
     end = time.perf_counter()
@@ -395,8 +395,8 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
             "doc_id": r["fields"].get("id", ""),
             "title": r["fields"].get("title", "Unknown"),
             "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
-            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+            "snippet": (r["fields"].get("snippet", "") or "")[:config.get("image", "truncation", "snippet_length")],
+            "text": (r["fields"].get("text", "") or "")[:config.get("image", "truncation", "text_length")],
         }
         for r in search_results
     ]
@@ -423,7 +423,7 @@ def get_results_children(result):
 
 async def poll_vespa_keepalive():
     while True:
-        await asyncio.sleep(get("app", "keepalive_interval_seconds"))
+        await asyncio.sleep(config.get("app", "keepalive_interval_seconds"))
         await vespa_app.keepalive()
         logger.debug(f"Vespa keepalive: {time.time()}")
 
@@ -440,8 +440,8 @@ def get_and_store_sim_maps(
         idx_to_token=idx_to_token,
     )
     img_paths = [IMG_DIR / f"{doc_id}.jpg" for doc_id in doc_ids]
-    max_wait = get("image", "max_wait_seconds")
-    poll_sleep = get("image", "poll_sleep_seconds")
+    max_wait = config.get("image", "max_wait_seconds")
+    poll_sleep = config.get("image", "poll_sleep_seconds")
     start_time = time.time()
     while (
         not all([os.path.exists(img_path) for img_path in img_paths])
@@ -545,8 +545,8 @@ async def get_suggestions(query: str = ""):
 async def message_generator(query_id: str, query: str, doc_ids: list):
     """Generator function to yield SSE messages for chat response"""
     images = []
-    num_images = get("search", "num_images")
-    max_wait = get("image", "max_wait_chat_seconds")
+    num_images = config.get("search", "num_images")
+    max_wait = config.get("image", "max_wait_chat_seconds")
     start_time = time.time()
     # Check if full images are ready on disk
     while (
@@ -567,7 +567,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                 )
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
-            await asyncio.sleep(get("image", "poll_sleep_seconds"))
+            await asyncio.sleep(config.get("image", "poll_sleep_seconds"))
 
     # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
@@ -594,7 +594,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
             f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
         )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
+            context_lines.append(f"  Text extract: {meta['text'][:config.get('image', 'truncation', 'snippet_length')]}")
     doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
 
     # Build image content blocks for OpenAI-compatible vision API
@@ -607,7 +607,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
+        img.save(buf, format="JPEG", quality=config.get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         content_parts.append({
             "type": "image_url",
@@ -620,7 +620,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+        async with httpx.AsyncClient(timeout=config.get("llm", "http_timeout_seconds")) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -648,7 +648,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                         if text:
                             response_text += text
                             yield f"event: message\ndata: {replace_newline_with_br(response_text)}\n\n"
-                            await asyncio.sleep(get("llm", "streaming_sleep_seconds"))
+                            await asyncio.sleep(config.get("llm", "streaming_sleep_seconds"))
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
     except Exception as e:
@@ -697,8 +697,8 @@ async def api_search(request):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=True,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=get("search", "final_hits"),
+        rerank_hits=config.get("search", "rerank_hits"),
+        final_hits=config.get("search", "final_hits"),
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
@@ -759,17 +759,249 @@ async def api_full_image(doc_id: str):
     return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
 
 
+# ---------------------------------------------------------------------------
+# Procore database API — serves real data from Vespa procore_record schema
+# ---------------------------------------------------------------------------
+
+# Map Procore source_table names to frontend DocumentCategory values
+_TABLE_TO_CATEGORY = {
+    "drawings": "drawing",
+    "drawing_revisions": "drawing",
+    "drawing_sets": "drawing",
+    "drawing_areas": "drawing",
+    "rfis": "rfi",
+    "submittals": "submittal",
+    "specification_sections": "spec",
+    "specification_section_revisions": "spec",
+    "change_orders": "change_order",
+    "commitment_change_orders": "change_order",
+    "photos": "photo",
+    "daily_logs": "report",
+    "timesheets": "report",
+}
+
+# Reverse map: category -> list of source tables
+_CATEGORY_TO_TABLES: dict[str, list[str]] = {}
+for _tbl, _cat in _TABLE_TO_CATEGORY.items():
+    _CATEGORY_TO_TABLES.setdefault(_cat, []).append(_tbl)
+
+_PROJECT_COLORS = [
+    "#3b82f6", "#8b5cf6", "#10b981", "#f59e0b",
+    "#ef4444", "#06b6d4", "#6366f1", "#ec4899",
+]
+
+_PROCORE_SCHEMA = config.get("vespa", "procore_record_schema")
+
+
+def _parse_category_counts(result: dict) -> dict[str, dict[str, int]]:
+    """Parse Vespa grouping response into {project_id: {source_table: count}}."""
+    counts: dict[str, dict[str, int]] = {}
+    root_children = result.get("root", {}).get("children", [])
+    for child in root_children:
+        if not child.get("id", "").startswith("group:root"):
+            continue
+        for group_list in child.get("children", []):
+            for project_group in group_list.get("children", []):
+                project_id = str(project_group.get("value", ""))
+                if not project_id or project_id == "0":
+                    continue
+                table_counts: dict[str, int] = {}
+                for inner_list in project_group.get("children", []):
+                    for table_group in inner_list.get("children", []):
+                        table_name = str(table_group.get("value", ""))
+                        count = table_group.get("fields", {}).get("count()", 0)
+                        table_counts[table_name] = count
+                counts[project_id] = table_counts
+    return counts
+
+
+def _aggregate_categories(table_counts: dict[str, int]) -> list[dict]:
+    """Aggregate source_table counts into frontend category counts."""
+    category_counts: dict[str, int] = {}
+    for table, count in table_counts.items():
+        if table == "projects":
+            continue
+        category = _TABLE_TO_CATEGORY.get(table, "other")
+        category_counts[category] = category_counts.get(category, 0) + count
+    return [
+        {"category": cat, "count": cnt}
+        for cat, cnt in sorted(category_counts.items(), key=lambda x: -x[1])
+        if cnt > 0
+    ]
+
+
+@app.get("/api/procore/projects")
+async def api_procore_projects():
+    """List Procore projects with category counts from Vespa."""
+    try:
+        # Run both queries concurrently
+        projects_coro = vespa_app.query_vespa_raw(
+            f'select * from {_PROCORE_SCHEMA} where source_table contains "projects"',
+            hits=100,
+        )
+        counts_coro = vespa_app.query_vespa_raw(
+            f"select * from {_PROCORE_SCHEMA} where true "
+            f"| all(group(project_id) max(100) each(output(count()) "
+            f"all(group(source_table) max(50) each(output(count())))))",
+            hits=0,
+        )
+        projects_result, counts_result = await asyncio.gather(
+            projects_coro, counts_coro
+        )
+
+        project_records = projects_result.get("root", {}).get("children", [])
+        project_category_counts = _parse_category_counts(counts_result)
+
+        projects = []
+        for idx, record in enumerate(project_records):
+            fields = record.get("fields", {})
+            metadata = fields.get("metadata", {})
+            # source_id is the project's own ID;
+            # project_id may be null for project records
+            project_id = str(
+                fields.get("source_id")
+                or metadata.get("id")
+                or fields.get("project_id")
+                or ""
+            )
+            if not project_id:
+                continue
+
+            table_counts = project_category_counts.get(project_id, {})
+            categories = _aggregate_categories(table_counts)
+            total_docs = sum(c["count"] for c in categories)
+
+            name = (
+                metadata.get("name")
+                or metadata.get("display_name")
+                or f"Project {project_id}"
+            )
+            description = metadata.get("address", "")
+            if metadata.get("city"):
+                description = (
+                    f"{description}, {metadata['city']}"
+                    if description
+                    else metadata["city"]
+                )
+
+            projects.append(
+                {
+                    "id": project_id,
+                    "name": name,
+                    "description": description,
+                    "documentCount": total_docs,
+                    "lastAccessedAt": metadata.get("updated_at", ""),
+                    "createdAt": metadata.get("created_at", ""),
+                    "categories": categories,
+                    "color": _PROJECT_COLORS[idx % len(_PROJECT_COLORS)],
+                }
+            )
+
+        return JSONResponse({"projects": projects})
+
+    except Exception as e:
+        logger.error(f"Error fetching Procore projects: {e}")
+        return JSONResponse({"projects": [], "error": str(e)}, status_code=500)
+
+
+@app.get("/api/procore/documents")
+async def api_procore_documents(
+    project_id: str = "",
+    category: str = "",
+    search: str = "",
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List documents from Procore with optional filtering."""
+    try:
+        conditions = []
+
+        if project_id:
+            conditions.append(f"project_id = {int(project_id)}")
+
+        if category:
+            tables = _CATEGORY_TO_TABLES.get(category, [])
+            if tables:
+                table_clauses = " or ".join(
+                    f'source_table contains "{t}"' for t in tables
+                )
+                conditions.append(f"({table_clauses})")
+
+        # Always exclude project metadata records from document listings
+        conditions.append('!(source_table contains "projects")')
+
+        where = " and ".join(conditions) if conditions else "true"
+
+        if search and search.strip():
+            # Escape quotes in search term
+            safe_search = search.replace('"', '\\"').strip()
+            where = f'({where}) and content_text contains "{safe_search}"'
+
+        yql = f"select * from {_PROCORE_SCHEMA} where {where}"
+        result = await vespa_app.query_vespa_raw(yql, hits=limit, offset=offset)
+
+        children = result.get("root", {}).get("children", [])
+        total = result.get("root", {}).get("fields", {}).get("totalCount", 0)
+
+        documents = []
+        for record in children:
+            fields = record.get("fields", {})
+            metadata = fields.get("metadata", {})
+            source_table = fields.get("source_table", "")
+            cat = _TABLE_TO_CATEGORY.get(source_table, "other")
+
+            title = (
+                metadata.get("title")
+                or metadata.get("name")
+                or metadata.get("subject")
+                or (fields.get("content_text", "") or "")[:100]
+                or f"{source_table} record"
+            )
+
+            doc_number = (
+                metadata.get("number")
+                or metadata.get("drawing_number")
+                or metadata.get("revision_number")
+                or ""
+            )
+
+            # Build tags from source_table and available metadata keys
+            tags = [source_table]
+            if metadata.get("discipline"):
+                tags.append(metadata["discipline"])
+
+            documents.append(
+                {
+                    "id": fields.get("doc_id", ""),
+                    "title": title,
+                    "documentNumber": str(doc_number),
+                    "category": cat,
+                    "pageCount": int(metadata.get("page_count", 0) or 0),
+                    "uploadedAt": metadata.get("created_at", ""),
+                    "tags": tags,
+                }
+            )
+
+        return JSONResponse({"documents": documents, "total": total})
+
+    except Exception as e:
+        logger.error(f"Error fetching Procore documents: {e}")
+        return JSONResponse(
+            {"documents": [], "total": 0, "error": str(e)}, status_code=500
+        )
+
+
 @rt("/app")
 def get():
     return Layout(Main(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4")))
 
 
 if __name__ == "__main__":
-    HOT_RELOAD = get("app", "hot_reload")
+    HOT_RELOAD = config.get("app", "hot_reload")
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
     uvicorn.run(
         "main:app",
-        host=get("app", "host"),
-        timeout_worker_healthcheck=get("app", "healthcheck_timeout"),
-        port=get("app", "port"),
+        host=config.get("app", "host"),
+        timeout_worker_healthcheck=config.get("app", "healthcheck_timeout"),
+        port=config.get("app", "port"),
     )

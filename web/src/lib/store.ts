@@ -36,7 +36,7 @@ export const useAppStore = create<AppState>()(
         }),
       clearRecentQueries: () => set({ recentQueries: [] }),
 
-      selectedProjectId: "proj-harbor-tower",
+      selectedProjectId: "",
       setSelectedProjectId: (id) => set({ selectedProjectId: id }),
 
       ranking: "hybrid",

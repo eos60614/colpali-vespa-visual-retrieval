@@ -18,7 +18,7 @@ export function Workspace() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [previewResultId, setPreviewResultId] = useState<string | null>(null);
 
-  const { projects, activeProject, selectProject } = useProject();
+  const { projects, activeProject, selectProject, loading: projectsLoading } = useProject();
   const scope = useScope();
   const search = useSearch();
 
@@ -116,9 +116,11 @@ export function Workspace() {
                   What do you need to find?
                 </h2>
                 <p className="text-sm text-[var(--text-tertiary)] max-w-md">
-                  Search across{" "}
-                  {activeProject ? (
+                  {projectsLoading ? (
+                    "Loading projects..."
+                  ) : activeProject ? (
                     <>
+                      Search across{" "}
                       <span className="text-[var(--text-secondary)] font-medium">
                         {activeProject.documentCount.toLocaleString()}
                       </span>{" "}
@@ -126,11 +128,13 @@ export function Workspace() {
                       <span className="text-[var(--text-secondary)] font-medium">
                         {activeProject.name}
                       </span>
+                      . CoPoly retrieves the exact pages you need, then explains what&apos;s on them.
                     </>
+                  ) : projects.length === 0 ? (
+                    "No projects found. Ingest data from your Procore database to get started."
                   ) : (
-                    "your construction documents"
+                    "Select a project to begin searching your construction documents."
                   )}
-                  . CoPoly retrieves the exact pages you need, then explains what&apos;s on them.
                 </p>
               </div>
               <QueryInput
