@@ -18,6 +18,7 @@ from functools import lru_cache
 import logging
 
 from backend.config import get
+from backend.logging_config import get_logger
 
 _CACHE_MAXSIZE = get("colpali", "lru_cache_maxsize")
 
@@ -31,7 +32,7 @@ class SimMapGenerator:
 
     def __init__(
         self,
-        logger: logging.Logger,
+        logger: logging.Logger = None,
         model_name: str = None,
         n_patch: int = None,
     ):
@@ -45,7 +46,7 @@ class SimMapGenerator:
         self.model_name = model_name or get("colpali", "model_name")
         self.n_patch = n_patch or get("colpali", "n_patch")
         self.device = get_torch_device("auto")
-        self.logger = logger
+        self.logger = logger or get_logger(__name__)
         self.logger.info(f"Using device: {self.device}")
         self.model, self.processor = self.load_model()
 

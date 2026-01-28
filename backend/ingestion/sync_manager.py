@@ -5,6 +5,8 @@ Orchestration of database sync operations.
 import json
 import logging
 import shutil
+
+from backend.logging_config import get_logger
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -127,7 +129,7 @@ class SyncManager:
         self._vespa = vespa_app
         self._schema_map = schema_map
         self._checkpoint_store = checkpoint_store
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
         self._pdf_processor = pdf_processor
         self._current_job: Optional[IngestionJob] = None
 
@@ -323,7 +325,7 @@ class SyncManager:
                     self._logger.info(msg)
 
                 except Exception as e:
-                    self._logger.error(f"Failed to sync table {table}: {e}")
+                    self._logger.error(f"Failed to sync table {table}: {e}", exc_info=True)
                     job.errors.append(f"{table}: {str(e)}")
 
                     await self._save_checkpoint(
@@ -338,7 +340,7 @@ class SyncManager:
             job.completed_at = datetime.now(timezone.utc)
 
         except Exception as e:
-            self._logger.error(f"Full sync failed: {e}")
+            self._logger.error(f"Full sync failed: {e}", exc_info=True)
             job.status = "FAILED"
             job.errors.append(str(e))
             job.completed_at = datetime.now(timezone.utc)
@@ -662,7 +664,7 @@ class SyncManager:
                         self._logger.info(msg)
 
                 except Exception as e:
-                    self._logger.error(f"Failed to sync table {table}: {e}")
+                    self._logger.error(f"Failed to sync table {table}: {e}", exc_info=True)
                     job.errors.append(f"{table}: {str(e)}")
 
                     await self._save_checkpoint(
@@ -677,7 +679,7 @@ class SyncManager:
             job.completed_at = datetime.now(timezone.utc)
 
         except Exception as e:
-            self._logger.error(f"Incremental sync failed: {e}")
+            self._logger.error(f"Incremental sync failed: {e}", exc_info=True)
             job.status = "FAILED"
             job.errors.append(str(e))
             job.completed_at = datetime.now(timezone.utc)

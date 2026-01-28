@@ -5,8 +5,6 @@ import json
 import os
 import time
 import uuid
-import logging
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -33,6 +31,8 @@ from shad4fast import ShadHead
 from vespa.application import Vespa
 
 from backend.config import get
+from backend.logging_config import configure_logging, get_logger
+from backend.middleware import CorrelationIdMiddleware, ErrorBoundaryMiddleware
 from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
@@ -85,19 +85,10 @@ sselink = Script(
     crossorigin="anonymous",
 )
 
-# Get log level from config
+# Initialize centralized logging (structured JSON in production, readable in dev)
 LOG_LEVEL = get("app", "log_level").upper()
-# Configure logger
-logger = logging.getLogger("vespa_app")
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(
-    logging.Formatter(
-        "%(levelname)s: \t %(asctime)s \t %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-)
-logger.addHandler(handler)
-logger.setLevel(getattr(logging, LOG_LEVEL))
+configure_logging(log_level=LOG_LEVEL, service="vespa_app")
+logger = get_logger("vespa_app")
 
 app, rt = fast_app(
     htmlkw={"cls": "grid h-full"},
@@ -114,6 +105,11 @@ app, rt = fast_app(
         ShadHead(tw_cdn=False, theme_handle=True),
     ),
 )
+
+# Install ASGI middleware: error boundary (outermost) → correlation ID → app
+app = CorrelationIdMiddleware(app)
+app = ErrorBoundaryMiddleware(app)
+
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
 # Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
@@ -211,7 +207,7 @@ async def post(
     try:
         file_bytes = await pdf_file.read()
     except Exception as e:
-        logger.error(f"Error reading uploaded file: {e}")
+        logger.error(f"Error reading uploaded file: {e}", exc_info=True)
         return UploadError("Error reading uploaded file")
 
     # Validate file size
@@ -281,8 +277,8 @@ async def post(
             use_vlm_detection=enable_vlm,
         )
     except Exception as e:
-        logger.error(f"Error processing PDF: {e}")
-        return UploadError(f"Error processing document: {str(e)}")
+        logger.error(f"Error processing PDF: {e}", exc_info=True)
+        return UploadError("Error processing document. Please try again.")
 
     if success:
         final_title = title.strip() if title.strip() else Path(pdf_file.filename).stem
@@ -479,7 +475,7 @@ def _download_images_bg(doc_ids):
                     f.write(base64.b64decode(image_data))
                 logger.debug(f"Background download: saved {doc_id}")
             except Exception as e:
-                logger.error(f"Background image download failed for {doc_id}: {e}")
+                logger.error(f"Background image download failed for {doc_id}: {e}", exc_info=True)
 
 
 @app.get("/get_sim_map")
@@ -652,8 +648,8 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
     except Exception as e:
-        logger.error(f"Chat LLM streaming failed: {e}")
-        yield f"event: message\ndata: Error generating AI response.\n\n"
+        logger.error(f"Chat LLM streaming failed: {e}", exc_info=True)
+        yield "event: message\ndata: Error generating AI response.\n\n"
     yield "event: close\ndata: \n\n"
 
 

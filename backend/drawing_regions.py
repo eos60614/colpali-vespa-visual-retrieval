@@ -15,7 +15,6 @@ Optional overlay: VLM-as-Classifier — labels pre-detected regions semantically
 
 import io
 import json
-import logging
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -23,8 +22,9 @@ import numpy as np
 from PIL import Image
 
 from backend.config import get
+from backend.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Region detection constants from ki55.toml
 MIN_REGION_SIZE = get("drawing_regions", "min_region_size")

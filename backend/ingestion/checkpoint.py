@@ -4,6 +4,8 @@ Checkpoint persistence for sync state using SQLite.
 
 import logging
 from dataclasses import dataclass
+
+from backend.logging_config import get_logger
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -36,7 +38,7 @@ class CheckpointStore:
             logger: Optional logger instance
         """
         self._db_path = db_path
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
     async def initialize(self) -> None:
         """Create checkpoint table if not exists."""

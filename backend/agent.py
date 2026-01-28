@@ -9,7 +9,6 @@ OpenAI, or local Ollama).
 import base64
 import io
 import json
-import logging
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -17,9 +16,10 @@ import httpx
 from PIL import Image
 
 from backend.config import get
+from backend.logging_config import get_logger
 from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 
-logger = logging.getLogger("vespa_app")
+logger = get_logger(__name__)
 
 # Tool definitions for OpenAI-compatible function calling
 AGENT_TOOLS = [
@@ -288,8 +288,8 @@ class AgentSession:
                         resp.raise_for_status()
                         response_data = resp.json()
                     except Exception as e:
-                        logger.error(f"Agent LLM call failed: {e}")
-                        yield self._sse_event("error", f"Agent error: {str(e)}")
+                        logger.error(f"Agent LLM call failed: {e}", exc_info=True)
+                        yield self._sse_event("error", "Agent encountered an error. Please try again.")
                         yield self._sse_event("close", "")
                         return
 
@@ -372,8 +372,8 @@ class AgentSession:
                         break
 
         except Exception as e:
-            logger.error(f"Agent session failed: {e}")
-            yield self._sse_event("error", f"Agent error: {str(e)}")
+            logger.error(f"Agent session failed: {e}", exc_info=True)
+            yield self._sse_event("error", "Agent encountered an error. Please try again.")
             yield self._sse_event("close", "")
             return
 
@@ -411,7 +411,7 @@ End with a <b>Sources</b> section listing all referenced documents and pages."""
                         if content:
                             final_answer = content.replace("\n", "<br>")
                 except Exception as e:
-                    logger.error(f"Agent answer generation failed: {e}")
+                    logger.error(f"Agent answer generation failed: {e}", exc_info=True)
                     final_answer = "I encountered an error while generating the answer."
             else:
                 final_answer = "I am sorry, I couldn't find enough relevant information to answer your question."

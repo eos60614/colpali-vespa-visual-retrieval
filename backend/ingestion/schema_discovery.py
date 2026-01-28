@@ -5,6 +5,8 @@ Database schema introspection and documentation generation.
 import json
 import logging
 import re
+
+from backend.logging_config import get_logger
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -132,7 +134,7 @@ class SchemaDiscovery:
             logger: Optional logger instance
         """
         self._db = db
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
     async def discover(self, include_samples: bool = False) -> SchemaMap:
         """Perform full schema discovery.

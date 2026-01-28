@@ -1,4 +1,7 @@
 import type { SearchResult } from "@/types";
+import { correlationHeaders, getLogger } from "@/lib/logger";
+
+const logger = getLogger("api-client");
 
 // ---------------------------------------------------------------------------
 // Backend search response shape (mirrors Python /api/search JSON output)
@@ -51,7 +54,7 @@ export function transformResult(
 }
 
 // ---------------------------------------------------------------------------
-// API helpers
+// API helpers — all requests include x-correlation-id
 // ---------------------------------------------------------------------------
 
 export async function searchDocuments(
@@ -61,12 +64,13 @@ export async function searchDocuments(
 ): Promise<SearchResponse> {
   const res = await fetch("/api/search", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...correlationHeaders() },
     body: JSON.stringify({ query, ranking }),
     signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Search failed" }));
+    logger.error("Search request failed", { status: res.status, error: err.error });
     throw new Error(err.error || "Search failed");
   }
   return res.json();
@@ -78,7 +82,7 @@ export async function getSuggestions(
 ): Promise<string[]> {
   const res = await fetch(
     `/api/suggestions?query=${encodeURIComponent(query)}`,
-    { signal }
+    { signal, headers: { ...correlationHeaders() } }
   );
   if (!res.ok) return [];
   const data = await res.json();
@@ -87,9 +91,13 @@ export async function getSuggestions(
 
 export async function getFullImage(docId: string): Promise<string> {
   const res = await fetch(
-    `/api/image?doc_id=${encodeURIComponent(docId)}`
+    `/api/image?doc_id=${encodeURIComponent(docId)}`,
+    { headers: { ...correlationHeaders() } }
   );
-  if (!res.ok) throw new Error("Failed to load image");
+  if (!res.ok) {
+    logger.error("Failed to load image", { docId, status: res.status });
+    throw new Error("Failed to load image");
+  }
   const data = await res.json();
   return data.image;
 }
@@ -117,11 +125,13 @@ export async function uploadDocument(
 ): Promise<{ success: boolean; message: string }> {
   const res = await fetch("/api/upload", {
     method: "POST",
+    headers: { ...correlationHeaders() },
     body: formData,
     signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Upload failed" }));
+    logger.error("Upload request failed", { status: res.status, error: err.error });
     throw new Error(err.error || "Upload failed");
   }
   return res.json();

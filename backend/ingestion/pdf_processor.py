@@ -6,6 +6,8 @@ Integrates the ColPali PDF processing system with the database ingestion pipelin
 
 import logging
 from dataclasses import dataclass
+
+from backend.logging_config import get_logger
 from pathlib import Path
 from typing import Any, Optional
 
@@ -44,7 +46,7 @@ class PDFProcessor:
             batch_size: Batch size for embedding generation
         """
         self._vespa = vespa_app
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
         self._batch_size = batch_size if batch_size is not None else get("ingestion", "batch_size")
 
         # Lazy-loaded model components
@@ -141,7 +143,7 @@ class PDFProcessor:
         try:
             file_bytes = local_path.read_bytes()
         except Exception as e:
-            self._logger.error(f"Failed to read PDF file {local_path}: {e}")
+            self._logger.error(f"Failed to read PDF file {local_path}: {e}", exc_info=True)
             return PDFProcessingResult(
                 file=file,
                 success=False,
@@ -184,7 +186,7 @@ class PDFProcessor:
             )
 
         except Exception as e:
-            self._logger.error(f"Error processing PDF {filename}: {e}")
+            self._logger.error(f"Error processing PDF {filename}: {e}", exc_info=True)
             return PDFProcessingResult(
                 file=file,
                 success=False,
