@@ -36,6 +36,10 @@ vlm_model = "anthropic/claude-sonnet-4"
 vlm_max_tokens = 2000
 vlm_classifier_max_tokens = 1000
 vlm_timeout_seconds = 60.0
+# LLM-based reranking: sends query + doc text to LLM for semantic relevance scoring
+# Adds latency but can improve relevance beyond MaxSim embedding similarity
+llm_rerank_enabled = false
+llm_rerank_candidates = 10  # How many MaxSim candidates to send to LLM
 
 [vespa]
 schema_name = "pdf_page"

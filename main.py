@@ -37,6 +37,7 @@ from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
+from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -333,10 +334,14 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
 
     # Parse rerank parameter (default to True for better results)
     do_rerank = rerank.lower() in ("true", "1", "yes")
+    do_llm_rerank = is_llm_rerank_enabled()
+    final_hits = get("search", "final_hits")
 
     # Get the hash of the query and ranking value
     query_id = generate_query_id(query, ranking)
-    logger.info(f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}")
+    logger.info(
+        f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}, llm_rerank: {do_llm_rerank}"
+    )
     # Run the embedding and query against Vespa app
     start_inference = time.perf_counter()
     q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
@@ -347,6 +352,10 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         f"Inference time for query_id: {query_id} \t {end_inference - start_inference:.2f} seconds"
     )
 
+    # When LLM reranking is enabled, get more candidates from MaxSim so the
+    # LLM has a richer set to reorder before we take the final top results.
+    maxsim_final_hits = get_llm_rerank_candidates() if do_llm_rerank else final_hits
+
     start = time.perf_counter()
     # Fetch real search results from Vespa
     result = await vespa_app.get_result_from_query(
@@ -356,12 +365,24 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         idx_to_token=idx_to_token,
         rerank=do_rerank,
         rerank_hits=get("search", "rerank_hits"),
-        final_hits=get("search", "final_hits"),
+        final_hits=maxsim_final_hits,  # More candidates when LLM reranking follows
     )
     end = time.perf_counter()
     logger.info(
         f"Search results fetched in {end - start:.2f} seconds. Vespa search time: {result['timing']['searchtime']}"
     )
+
+    # Optional LLM reranking pass on MaxSim candidates
+    if do_llm_rerank and result.get("root", {}).get("children"):
+        start_llm = time.perf_counter()
+        result["root"]["children"] = await llm_rerank_results(
+            query=query,
+            results=result["root"]["children"],
+            top_k=final_hits,
+        )
+        end_llm = time.perf_counter()
+        logger.info(f"LLM reranking took {end_llm - start_llm:.2f} seconds")
+
     search_time = result["timing"]["searchtime"]
     # Safely get total_count with a default of 0
     total_count = result.get("root", {}).get("fields", {}).get("totalCount", 0)
