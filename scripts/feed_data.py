@@ -16,7 +16,6 @@ Requirements:
 import argparse
 import base64
 import io
-import os
 import sys
 from pathlib import Path
 from typing import Generator, List, Tuple
@@ -32,13 +31,15 @@ from vespa.application import Vespa
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend.config import get, get_env
+
 
 def get_colpali_model():
     """Load ColQwen2.5 model for generating embeddings."""
     import torch
     from colpali_engine.models import ColQwen2_5, ColQwen2_5_Processor
 
-    model_name = "tsystems/colqwen2.5-3b-multilingual-v1.0"
+    model_name = get("colpali", "model_name")
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     processor = ColQwen2_5_Processor.from_pretrained(model_name)
@@ -59,8 +60,10 @@ def image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def create_blur_image(image: Image.Image, max_size: int = 100) -> str:
+def create_blur_image(image: Image.Image, max_size: int = None) -> str:
     """Create a small blurred version of the image for fast loading."""
+    if max_size is None:
+        max_size = get("image", "blur_max_size")
     img_copy = image.copy()
     img_copy.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     return image_to_base64(img_copy, format="JPEG")
@@ -72,7 +75,7 @@ def float_to_binary_embedding(float_embedding: np.ndarray) -> list:
     return binary.tolist()
 
 
-def generate_embeddings(model, processor, images: list, device: str, batch_size: int = 4):
+def generate_embeddings(model, processor, images: list, device: str, batch_size: int = None):
     """Generate ColQwen2.5 embeddings for images.
 
     Returns:
@@ -80,6 +83,8 @@ def generate_embeddings(model, processor, images: list, device: str, batch_size:
     """
     import torch
 
+    if batch_size is None:
+        batch_size = get("ingestion", "batch_size")
     all_embeddings = []
 
     for i in range(0, len(images), batch_size):
@@ -129,7 +134,7 @@ def pdf_to_images_worker(pdf_path: str) -> Tuple[str, List[Image.Image], List[st
         for page_num in range(len(doc)):
             page = doc[page_num]
             # Render image
-            pix = page.get_pixmap(dpi=150)
+            pix = page.get_pixmap(dpi=get("image", "dpi"))
             img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
             images.append(img)
             # Extract text
@@ -155,7 +160,7 @@ def pdf_to_images(pdf_path: Path) -> list:
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-        pix = page.get_pixmap(dpi=150)
+        pix = page.get_pixmap(dpi=get("image", "dpi"))
         img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
         images.append(img)
 
@@ -202,7 +207,7 @@ def feed_document(app: Vespa, doc: dict) -> Tuple[str, bool, str]:
     """Feed a single document to Vespa. Returns (doc_id, success, error_msg)."""
     try:
         response = app.feed_data_point(
-            schema="pdf_page",
+            schema=get("vespa", "schema_name"),
             data_id=doc["id"],
             fields=doc["fields"]
         )
@@ -220,13 +225,13 @@ def main():
     parser.add_argument("--sample", action="store_true", help="Use sample data for testing")
     parser.add_argument(
         "--vespa-url",
-        default=os.environ.get("VESPA_LOCAL_URL", "http://localhost:8080"),
+        default=get_env("VESPA_LOCAL_URL") or get("app", "default_vespa_url"),
         help="Vespa endpoint URL",
     )
     parser.add_argument("--deploy", action="store_true", help="Deploy application before feeding")
-    parser.add_argument("--workers", type=int, default=4, help="Number of parallel workers for PDF processing")
-    parser.add_argument("--feed-workers", type=int, default=10, help="Number of parallel workers for Vespa feeding")
-    parser.add_argument("--batch-size", type=int, default=8, help="Batch size for embedding generation")
+    parser.add_argument("--workers", type=int, default=get("ingestion", "pdf_workers"), help="Number of parallel workers for PDF processing")
+    parser.add_argument("--feed-workers", type=int, default=get("ingestion", "feed_workers"), help="Number of parallel workers for Vespa feeding")
+    parser.add_argument("--batch-size", type=int, default=get("ingestion", "embedding_batch_size"), help="Batch size for embedding generation")
     parser.add_argument(
         "--detect-regions", action="store_true",
         help="Enable AI region detection for large-format drawings. "
@@ -359,7 +364,8 @@ def main():
                         is_full_page = region_meta.region_type == "full_page"
                         doc_id = page_doc_id if is_full_page else f"{page_doc_id}_region_{region_idx}"
 
-                        snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                        _snip_len = get("image", "truncation", "snippet_ingest_length")
+                        snippet = page_text[:_snip_len] + "..." if len(page_text) > _snip_len else page_text
                         if not snippet:
                             snippet = f"Page {page_num + 1} of {pdf_path.name}"
                         if not is_full_page and region_meta.label:
@@ -394,7 +400,8 @@ def main():
                     )
                     bin_emb, float_emb = embeddings[0]
 
-                    snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                    _snip_len = get("image", "truncation", "snippet_ingest_length")
+                    snippet = page_text[:_snip_len] + "..." if len(page_text) > _snip_len else page_text
                     if not snippet:
                         snippet = f"Page {page_num + 1} of {pdf_path.name}"
 

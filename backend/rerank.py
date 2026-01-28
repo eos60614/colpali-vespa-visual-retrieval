@@ -9,6 +9,10 @@ import numpy as np
 import torch
 from typing import List, Dict, Any, Tuple
 
+from backend.config import get
+
+EMBEDDING_DIM = get("colpali", "embedding_dim")
+
 
 def parse_float_embedding(float_cells: Dict) -> np.ndarray:
     """
@@ -34,7 +38,7 @@ def parse_float_embedding(float_cells: Dict) -> np.ndarray:
     num_patches = len(patch_indices)
 
     # Parse each patch's float embedding
-    embeddings = np.zeros((num_patches, 128), dtype=np.float32)
+    embeddings = np.zeros((num_patches, EMBEDDING_DIM), dtype=np.float32)
 
     for i, patch_idx in enumerate(patch_indices):
         embeddings[i] = np.array(blocks[str(patch_idx)], dtype=np.float32)
@@ -68,7 +72,7 @@ def unpack_binary_embedding(binary_cells: Dict) -> np.ndarray:
     num_patches = len(patch_indices)
 
     # Unpack each patch's binary embedding
-    unpacked = np.zeros((num_patches, 128), dtype=np.float32)
+    unpacked = np.zeros((num_patches, EMBEDDING_DIM), dtype=np.float32)
 
     for i, patch_idx in enumerate(patch_indices):
         binary_int8 = np.array(blocks[str(patch_idx)], dtype=np.int8)

@@ -15,8 +15,10 @@ Usage:
 import argparse
 import base64
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
+from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional
 
 import numpy as np
@@ -27,12 +29,17 @@ from tqdm import tqdm
 from vespa.application import Vespa
 from transformers import AutoModel, AutoProcessor
 
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from backend.config import get
+
 load_dotenv()
 
 
 def load_colqwen3_model(device: str = "cuda"):
     """Load ColQwen2.5 model and processor."""
-    model_id = "tsystems/colqwen2.5-3b-multilingual-v1.0"
+    model_id = get("colpali", "model_name")
     print(f"Loading ColQwen2.5 model: {model_id}")
 
     # Use SDPA (PyTorch's Scaled Dot-Product Attention) - equivalent to FlashAttention 2
@@ -224,7 +231,7 @@ def update_single_document(vespa: Vespa, doc_id: str, embedding: Dict[str, List[
 
         with vespa.syncio() as session:
             response = session.update_data(
-                schema="pdf_page",
+                schema=get("vespa", "schema_name"),
                 data_id=doc_id,
                 fields={"embedding_colqwen3": {"cells": cells}},
             )

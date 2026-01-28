@@ -1,0 +1,185 @@
+# ki55.toml — Non-sensitive configuration for the ColPali-Vespa visual retrieval system
+# All values are REQUIRED. The application will raise RuntimeError if any are missing.
+
+[app]
+host = "0.0.0.0"
+port = 7860
+log_level = "INFO"
+max_file_size_mb = 250
+static_dir = "static"
+img_dir = "static/full_images"
+sim_map_dir = "static/sim_maps"
+default_vespa_url = "http://localhost:8080"
+keepalive_interval_seconds = 5
+healthcheck_timeout = 30
+hot_reload = false
+
+[app.cdn]
+overlayscrollbars_css = "https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/styles/overlayscrollbars.min.css"
+overlayscrollbars_js = "https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/browser/overlayscrollbars.browser.es5.min.js"
+awesomplete_css = "https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.css"
+awesomplete_js = "https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.js"
+htmx_sse_js = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"
+htmx_sse_integrity = "sha384-A986SAtodyH8eg8x8irJnYUk7i9inVQqYigD6qZ9evobksGNIXfeFvDwLSHcp31N"
+
+[app.validation]
+max_tags = 20
+max_tag_length = 50
+max_title_length = 200
+max_description_length = 1000
+
+[llm]
+chat_model = "google/gemini-2.5-flash"
+http_timeout_seconds = 60.0
+streaming_sleep_seconds = 0.1
+vlm_model = "anthropic/claude-sonnet-4"
+vlm_max_tokens = 2000
+vlm_classifier_max_tokens = 1000
+vlm_timeout_seconds = 60.0
+
+[vespa]
+schema_name = "pdf_page"
+procore_record_schema = "procore_record"
+max_query_terms = 64
+query_timeout = "10s"
+keepalive_timeout = "3s"
+connection_count = 1
+target_hits_per_query_tensor = 100
+hnsw_explore_additional_hits = 300
+default_hits = 3
+rerank_count = 100
+select_fields = "id,title,url,blur_image,page_number,snippet,text"
+select_fields_with_embedding = "id,title,url,blur_image,page_number,snippet,text,embedding_float"
+
+[vespa.mtls]
+key_path = "/tmp/vespa-data-plane-private-key.pem"
+cert_path = "/tmp/vespa-data-plane-public-cert.pem"
+
+[colpali]
+model_name = "tsystems/colqwen2.5-3b-multilingual-v1.0"
+n_patch = 32
+image_seq_length_fallback = 1024
+scaling_factor = 8
+lru_cache_maxsize = 128
+embedding_dim = 128
+
+[colpali.models.colpali]
+id = "colpali"
+name = "ColPali"
+hf_model_id = "vidore/colpali-v1.2"
+embedding_dim = 128
+max_visual_tokens = 1024
+description = "Original ColPali model, good general performance"
+requires_flash_attention = false
+
+[colpali.models.colqwen3]
+id = "colqwen3"
+name = "ColQwen2.5"
+hf_model_id = "tsystems/colqwen2.5-3b-multilingual-v1.0"
+embedding_dim = 128
+max_visual_tokens = 768
+description = "Better multilingual support, improved chart/table understanding"
+requires_flash_attention = false
+
+[search]
+rerank_hits = 20
+final_hits = 3
+num_images = 3
+
+[image]
+jpeg_quality = 85
+blur_max_size = 100
+dpi = 150
+max_wait_seconds = 5
+max_wait_chat_seconds = 10
+max_api_dimension = 1500
+vlm_jpeg_quality = 80
+poll_sleep_seconds = 0.2
+
+[image.truncation]
+snippet_length = 300
+text_length = 500
+snippet_ingest_length = 200
+
+[agent]
+max_steps = 5
+img_dir = "static/full_images"
+max_images = 5
+client_timeout_seconds = 120.0
+answer_timeout_seconds = 60.0
+jpeg_quality = 85
+text_preview_length = 300
+snippet_preview_length = 200
+
+[drawing_regions]
+min_region_size = 200
+min_region_area = 100_000
+large_page_threshold = 2_800_000
+tile_overlap = 100
+max_regions = 12
+target_tile_size = 1800
+grid_size = 50
+content_threshold = 240
+whitespace_threshold = 0.02
+min_gap = 50
+content_density_threshold = 0.005
+region_extract_padding = 20
+density_scaling_factor = 10
+neighborhood_divisor = 5
+
+[drawing_regions.confidence]
+table_region = 0.9
+text_ratio_threshold = 0.7
+drawing_ratio_threshold = 0.3
+framed_region = 0.9
+cluster_region = 0.85
+containment_ratio = 0.95
+
+[drawing_regions.pdf_vector]
+border_span_pct = 0.85
+element_proximity_px = 100
+table_min_lines = 3
+table_spacing_variance = 0.3
+min_vector_paths = 10
+framing_rect_min_area_pct = 0.02
+line_y_threshold = 2
+min_line_length = 20
+boundary_tolerance = 10
+border_tolerance = 5
+contained_tolerance = 5
+tiny_path_threshold = 5
+
+[ingestion]
+batch_size = 4
+default_batch_size = 10000
+pdf_workers = 4
+feed_workers = 10
+embedding_batch_size = 8
+pool_size = 5
+pool_min_size = 1
+default_port = 5432
+doc_id_hash_length = 12
+doc_id_slug_max_length = 30
+
+[ingestion.files]
+max_file_size_mb = 100
+supported_types = ["pdf", "jpg", "jpeg", "png", "gif", "tiff"]
+download_workers = 2
+download_timeout_seconds = 300
+chunk_size = 8192
+s3_default_bucket = "procore-files"
+s3_default_region = "us-east-1"
+
+[ingestion.sync]
+default_exclude = ["_prisma_migrations", "sync_events", "webhook_*"]
+delete_detection_interval = 10
+sync_interval_seconds = 300
+vespa_id_query_batch_size = 400
+streaming_batch_size = 1000
+change_detect_batch_size = 1000
+change_detect_sample_size = 1000
+id_set_batch_size = 10000
+
+[autocomplete]
+min_chars = 1
+max_items = 5

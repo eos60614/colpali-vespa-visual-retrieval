@@ -14,6 +14,7 @@ from typing import Any, Optional, TYPE_CHECKING
 if TYPE_CHECKING:
     from backend.ingestion.pdf_processor import PDFProcessor
 
+from backend.config import get
 from backend.ingestion.change_detector import ChangeDetector
 from backend.ingestion.checkpoint import Checkpoint, CheckpointStore
 from backend.ingestion.db_connection import DatabaseConnection
@@ -55,13 +56,21 @@ class SyncConfig:
 
     tables: Optional[list[str]] = None  # None = all tables
     exclude_tables: list[str] = field(default_factory=list)
-    batch_size: int = 10000
+    batch_size: int = None
     download_files: bool = False
-    file_workers: int = 2
+    file_workers: int = None
     download_dir: Optional[Path] = None
     process_pdfs: bool = False  # Process downloaded PDFs with ColPali
     detect_deletes: bool = False  # Detect and remove deleted records
-    delete_detection_interval: int = 10  # Every Nth daemon cycle (0 = disabled)
+    delete_detection_interval: int = None
+
+    def __post_init__(self):
+        if self.batch_size is None:
+            self.batch_size = get("ingestion", "default_batch_size")
+        if self.file_workers is None:
+            self.file_workers = get("ingestion", "files", "download_workers")
+        if self.delete_detection_interval is None:
+            self.delete_detection_interval = get("ingestion", "sync", "delete_detection_interval")
 
 
 @dataclass
@@ -90,11 +99,7 @@ class SyncManager:
     """Orchestrate database sync operations."""
 
     # Default tables to exclude (system tables)
-    DEFAULT_EXCLUDE = [
-        "_prisma_migrations",
-        "sync_events",
-        "webhook_*",
-    ]
+    DEFAULT_EXCLUDE = get("ingestion", "sync", "default_exclude")
 
     def __init__(
         self,
@@ -213,8 +218,8 @@ class SyncManager:
                 aws_config = {
                     "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
                     "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
-                    "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
-                    "S3_BUCKET": os.environ.get("S3_BUCKET", "procore-integration-files"),
+                    "AWS_REGION": os.environ.get("AWS_REGION", get("ingestion", "files", "s3_default_region")),
+                    "S3_BUCKET": os.environ.get("S3_BUCKET", get("ingestion", "files", "s3_default_bucket")),
                 }
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
@@ -411,8 +416,8 @@ class SyncManager:
                 aws_config = {
                     "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
                     "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
-                    "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
-                    "S3_BUCKET": os.environ.get("S3_BUCKET", "procore-integration-files"),
+                    "AWS_REGION": os.environ.get("AWS_REGION", get("ingestion", "files", "s3_default_region")),
+                    "S3_BUCKET": os.environ.get("S3_BUCKET", get("ingestion", "files", "s3_default_bucket")),
                 }
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
@@ -764,7 +769,7 @@ class SyncManager:
             doc_id = f"{table}:{record_id}"
             try:
                 await self._vespa.delete_data(
-                    schema="procore_record",
+                    schema=get("vespa", "procore_record_schema"),
                     data_id=doc_id,
                 )
                 deleted += 1
@@ -844,7 +849,7 @@ class SyncManager:
         """
         try:
             response = self._vespa.get_data(
-                schema="procore_record",
+                schema=get("vespa", "procore_record_schema"),
                 data_id=doc_id,
             )
             # pyvespa get_data returns a VespaResponse; extract fields
@@ -935,7 +940,7 @@ class SyncManager:
                     continue
 
                 response = self._vespa.query(
-                    yql=f'select documentid from pdf_page where title contains "{search_term}"',
+                    yql=f'select documentid from {get("vespa", "schema_name")} where title contains "{search_term}"',
                     hits=1000,
                 )
 
@@ -956,7 +961,7 @@ class SyncManager:
                         vespa_id = parts[-1] if parts else doc_id
                         try:
                             self._vespa.delete_data(
-                                schema="pdf_page",
+                                schema=get("vespa", "schema_name"),
                                 data_id=vespa_id,
                             )
                             deleted += 1
@@ -988,12 +993,12 @@ class SyncManager:
         """
         ids: set[str] = set()
         offset = 0
-        batch_size = 400
+        batch_size = get("ingestion", "sync", "vespa_id_query_batch_size")
 
         while True:
             try:
                 response = self._vespa.query(
-                    yql=f'select source_id from procore_record where source_table contains "{table}"',
+                    yql=f'select source_id from {get("vespa", "procore_record_schema")} where source_table contains "{table}"',
                     hits=batch_size,
                     offset=offset,
                 )

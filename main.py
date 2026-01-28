@@ -32,6 +32,8 @@ from PIL import Image
 from shad4fast import ShadHead
 from vespa.application import Vespa
 
+from backend.config import get
+from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
@@ -62,28 +64,28 @@ highlight_js = HighlightJS(
 
 overlayscrollbars_link = Link(
     rel="stylesheet",
-    href="https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/styles/overlayscrollbars.min.css",
+    href=get("app", "cdn", "overlayscrollbars_css"),
     type="text/css",
 )
 overlayscrollbars_js = Script(
-    src="https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/browser/overlayscrollbars.browser.es5.min.js"
+    src=get("app", "cdn", "overlayscrollbars_js")
 )
 awesomplete_link = Link(
     rel="stylesheet",
-    href="https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.css",
+    href=get("app", "cdn", "awesomplete_css"),
     type="text/css",
 )
 awesomplete_js = Script(
-    src="https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.js"
+    src=get("app", "cdn", "awesomplete_js")
 )
 sselink = Script(
-    src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4",
-    integrity="sha384-A986SAtodyH8eg8x8irJnYUk7i9inVQqYigD6qZ9evobksGNIXfeFvDwLSHcp31N",
+    src=get("app", "cdn", "htmx_sse_js"),
+    integrity=get("app", "cdn", "htmx_sse_integrity"),
     crossorigin="anonymous",
 )
 
-# Get log level from environment variable, default to INFO
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# Get log level from config
+LOG_LEVEL = get("app", "log_level").upper()
 # Configure logger
 logger = logging.getLogger("vespa_app")
 handler = logging.StreamHandler(sys.stdout)
@@ -114,25 +116,8 @@ app, rt = fast_app(
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
 # Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
-
-def _resolve_llm_config():
-    """Resolve LLM base URL and API key from environment variables."""
-    explicit_base = os.getenv("LLM_BASE_URL")
-    openrouter_key = os.getenv("OPENROUTER_API_KEY")
-    openai_key = os.getenv("OPENAI_API_KEY")
-
-    if explicit_base:
-        base_url = explicit_base
-    elif openai_key and not openrouter_key:
-        base_url = "https://api.openai.com/v1"
-    else:
-        base_url = "https://openrouter.ai/api/v1"
-
-    api_key = openrouter_key or openai_key or ""
-    return base_url, api_key
-
-LLM_BASE_URL, LLM_API_KEY = _resolve_llm_config()
-CHAT_MODEL = os.getenv("CHAT_MODEL", "google/gemini-2.5-flash")
+LLM_BASE_URL, LLM_API_KEY = resolve_llm_config()
+CHAT_MODEL = get_chat_model()
 CHAT_SYSTEM_PROMPT = """You are a document research assistant. You MUST answer the user's question using ONLY the provided document pages. Do NOT use outside knowledge.
 
 STRICT RULES:
@@ -147,9 +132,9 @@ RESPONSE FORMAT:
 - Do NOT include backticks (`) or markdown formatting.
 - End your response with a <b>Sources</b> section listing each document and page you referenced.
 """
-STATIC_DIR = Path("static")
-IMG_DIR = STATIC_DIR / "full_images"
-SIM_MAP_DIR = STATIC_DIR / "sim_maps"
+STATIC_DIR = Path(get("app", "static_dir"))
+IMG_DIR = Path(get("app", "img_dir"))
+SIM_MAP_DIR = Path(get("app", "sim_map_dir"))
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(SIM_MAP_DIR, exist_ok=True)
 
@@ -191,8 +176,7 @@ def get():
     return Layout(Main(AboutThisDemo()))
 
 
-# Maximum file size: 250MB
-MAX_FILE_SIZE = 250 * 1024 * 1024
+MAX_FILE_SIZE = get("app", "max_file_size_mb") * 1024 * 1024
 
 
 @rt("/upload")
@@ -249,20 +233,24 @@ async def post(
     if tags.strip():
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         # Validate tag count
-        if len(tag_list) > 20:
-            return UploadError("Maximum 20 tags allowed")
+        max_tags = get("app", "validation", "max_tags")
+        if len(tag_list) > max_tags:
+            return UploadError(f"Maximum {max_tags} tags allowed")
         # Validate individual tag length
+        max_tag_length = get("app", "validation", "max_tag_length")
         for tag in tag_list:
-            if len(tag) > 50:
-                return UploadError("Each tag must be 50 characters or less")
+            if len(tag) > max_tag_length:
+                return UploadError(f"Each tag must be {max_tag_length} characters or less")
 
     # Validate title length
-    if len(title) > 200:
-        return UploadError("Title must be 200 characters or less")
+    max_title_length = get("app", "validation", "max_title_length")
+    if len(title) > max_title_length:
+        return UploadError(f"Title must be {max_title_length} characters or less")
 
     # Validate description length
-    if len(description) > 1000:
-        return UploadError("Description must be 1000 characters or less")
+    max_desc_length = get("app", "validation", "max_description_length")
+    if len(description) > max_desc_length:
+        return UploadError(f"Description must be {max_desc_length} characters or less")
 
     # Get the ColPali model from the app
     sim_map_gen = app.sim_map_generator
@@ -367,8 +355,8 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=do_rerank,
-        rerank_hits=20,  # Fetch 20 candidates for reranking
-        final_hits=3,    # Return top 3 after reranking
+        rerank_hits=get("search", "rerank_hits"),
+        final_hits=get("search", "final_hits"),
     )
     end = time.perf_counter()
     logger.info(
@@ -386,8 +374,8 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
             "doc_id": r["fields"].get("id", ""),
             "title": r["fields"].get("title", "Unknown"),
             "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:300],
-            "text": (r["fields"].get("text", "") or "")[:500],
+            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
+            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
         }
         for r in search_results
     ]
@@ -414,7 +402,7 @@ def get_results_children(result):
 
 async def poll_vespa_keepalive():
     while True:
-        await asyncio.sleep(5)
+        await asyncio.sleep(get("app", "keepalive_interval_seconds"))
         await vespa_app.keepalive()
         logger.debug(f"Vespa keepalive: {time.time()}")
 
@@ -431,14 +419,14 @@ def get_and_store_sim_maps(
         idx_to_token=idx_to_token,
     )
     img_paths = [IMG_DIR / f"{doc_id}.jpg" for doc_id in doc_ids]
-    # All images should be downloaded, but best to wait 5 secs
-    max_wait = 5
+    max_wait = get("image", "max_wait_seconds")
+    poll_sleep = get("image", "poll_sleep_seconds")
     start_time = time.time()
     while (
         not all([os.path.exists(img_path) for img_path in img_paths])
         and time.time() - start_time < max_wait
     ):
-        time.sleep(0.2)
+        time.sleep(poll_sleep)
     if not all([os.path.exists(img_path) for img_path in img_paths]):
         logger.warning(f"Images not ready in 5 seconds for query_id: {query_id}")
         return False
@@ -536,8 +524,8 @@ async def get_suggestions(query: str = ""):
 async def message_generator(query_id: str, query: str, doc_ids: list):
     """Generator function to yield SSE messages for chat response"""
     images = []
-    num_images = 3  # Number of images before firing chat request
-    max_wait = 10  # seconds
+    num_images = get("search", "num_images")
+    max_wait = get("image", "max_wait_chat_seconds")
     start_time = time.time()
     # Check if full images are ready on disk
     while (
@@ -558,7 +546,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                 )
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(get("image", "poll_sleep_seconds"))
 
     # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
@@ -567,7 +555,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         yield "event: close\ndata: \n\n"
         return
 
-    is_remote = "openrouter.ai" in LLM_BASE_URL or LLM_API_KEY
+    is_remote = is_remote_api(LLM_BASE_URL) or LLM_API_KEY
     if is_remote and not LLM_API_KEY:
         yield "event: message\ndata: No OPENROUTER_API_KEY configured. AI chat is unavailable.\n\n"
         yield "event: close\ndata: \n\n"
@@ -585,7 +573,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
             f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
         )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:300]}")
+            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
     doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
 
     # Build image content blocks for OpenAI-compatible vision API
@@ -598,7 +586,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
+        img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
         content_parts.append({
             "type": "image_url",
@@ -607,13 +595,11 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
 
     content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
 
-    headers = {"Content-Type": "application/json"}
-    if LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
+    headers = build_auth_headers(LLM_API_KEY)
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -641,7 +627,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                         if text:
                             response_text += text
                             yield f"event: message\ndata: {replace_newline_with_br(response_text)}\n\n"
-                            await asyncio.sleep(0.1)
+                            await asyncio.sleep(get("llm", "streaming_sleep_seconds"))
                     except (json.JSONDecodeError, KeyError, IndexError):
                         continue
     except Exception as e:
@@ -690,8 +676,8 @@ async def api_search(request):
         ranking=ranking,
         idx_to_token=idx_to_token,
         rerank=True,
-        rerank_hits=20,
-        final_hits=3,
+        rerank_hits=get("search", "rerank_hits"),
+        final_hits=get("search", "final_hits"),
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
@@ -758,7 +744,11 @@ def get():
 
 
 if __name__ == "__main__":
-    HOT_RELOAD = os.getenv("HOT_RELOAD", "False").lower() == "true"
+    HOT_RELOAD = get("app", "hot_reload")
     logger.info(f"Starting app with hot reload: {HOT_RELOAD}")
-    uvicorn.run("main:app", host="0.0.0.0", timeout_worker_healthcheck=30, port=7860)
-    # serve(port=7860, reload=HOT_RELOAD)
+    uvicorn.run(
+        "main:app",
+        host=get("app", "host"),
+        timeout_worker_healthcheck=get("app", "healthcheck_timeout"),
+        port=get("app", "port"),
+    )

@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image
 from vespa.application import Vespa
 
+from backend.config import get
 from backend.drawing_regions import (
     detect_and_extract_regions,
     should_detect_regions,
@@ -51,8 +52,10 @@ def image_to_base64(image: Image.Image, format: str = "JPEG") -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def create_blur_image(image: Image.Image, max_size: int = 100) -> str:
+def create_blur_image(image: Image.Image, max_size: int = None) -> str:
     """Create a small blurred version of the image for fast loading."""
+    if max_size is None:
+        max_size = get("image", "blur_max_size")
     img_copy = image.copy()
     img_copy.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     return image_to_base64(img_copy, format="JPEG")
@@ -76,7 +79,7 @@ def sanitize_text(text: str) -> str:
     return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
 
-def render_page(page, dpi: int = 150) -> Tuple[Image.Image, str]:
+def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
     """
     Render a single fitz.Page to a PIL Image and extract its text.
 
@@ -87,19 +90,23 @@ def render_page(page, dpi: int = 150) -> Tuple[Image.Image, str]:
     Returns:
         Tuple of (PIL Image, sanitized text)
     """
+    if dpi is None:
+        dpi = get("image", "dpi")
     pix = page.get_pixmap(dpi=dpi)
     img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
     text = sanitize_text(page.get_text("text").strip())
     return img, text
 
 
-def pdf_to_images(file_bytes: bytes, dpi: int = 150) -> Tuple[List[Image.Image], List[str]]:
+def pdf_to_images(file_bytes: bytes, dpi: int = None) -> Tuple[List[Image.Image], List[str]]:
     """
     Convert PDF bytes to list of PIL Images and extracted text per page.
 
     Returns:
         Tuple of (images list, texts list)
     """
+    if dpi is None:
+        dpi = get("image", "dpi")
     images = []
     texts = []
 
@@ -113,7 +120,7 @@ def pdf_to_images(file_bytes: bytes, dpi: int = 150) -> Tuple[List[Image.Image],
     return images, texts
 
 
-def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = 4) -> List[Tuple[dict, dict]]:
+def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = None) -> List[Tuple[dict, dict]]:
     """
     Generate ColQwen2.5 embeddings for images.
 
@@ -122,6 +129,8 @@ def generate_embeddings(model, processor, images: List[Image.Image], device: str
     """
     import torch
 
+    if batch_size is None:
+        batch_size = get("ingestion", "batch_size")
     all_embeddings = []
 
     for i in range(0, len(images), batch_size):
@@ -165,8 +174,9 @@ def feed_document(app: Vespa, doc: dict) -> Tuple[str, bool, str]:
         Tuple of (doc_id, success, error_message)
     """
     try:
+        schema = get("vespa", "schema_name")
         response = app.feed_data_point(
-            schema="pdf_page",
+            schema=schema,
             data_id=doc["id"],
             fields=doc["fields"]
         )
@@ -184,9 +194,11 @@ def generate_doc_id(pdf_bytes: bytes, title: str) -> str:
 
     Format: {title_slug}_{content_hash}
     """
-    content_hash = hashlib.md5(pdf_bytes).hexdigest()[:12]
-    # Create safe title slug: alphanumeric only, max 30 chars
-    safe_title = re.sub(r'[^a-zA-Z0-9]', '_', title)[:30].strip('_').lower()
+    hash_length = get("ingestion", "doc_id_hash_length")
+    content_hash = hashlib.md5(pdf_bytes).hexdigest()[:hash_length]
+    # Create safe title slug: alphanumeric only, max chars from config
+    slug_max_length = get("ingestion", "doc_id_slug_max_length")
+    safe_title = re.sub(r'[^a-zA-Z0-9]', '_', title)[:slug_max_length].strip('_').lower()
     if not safe_title:
         safe_title = "document"
     return f"{safe_title}_{content_hash}"
@@ -202,7 +214,7 @@ def ingest_pdf(
     title: Optional[str] = None,
     description: str = "",
     tags: Optional[List[str]] = None,
-    batch_size: int = 4,
+    batch_size: int = None,
     detect_drawing_regions: bool = False,
     use_vlm_detection: bool = False,
     vlm_api_key: Optional[str] = None,
@@ -241,6 +253,12 @@ def ingest_pdf(
     if tags is None:
         tags = []
 
+    # Resolve defaults from config
+    if batch_size is None:
+        batch_size = get("ingestion", "batch_size")
+    snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
+    render_dpi = get("image", "dpi")
+
     # Step 1: Validate PDF
     is_valid, validation_msg = validate_pdf(file_bytes)
     if not is_valid:
@@ -265,7 +283,7 @@ def ingest_pdf(
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
-            image, page_text = render_page(page, dpi=150)
+            image, page_text = render_page(page, dpi=render_dpi)
             page_doc_id = f"{base_doc_id}_page_{page_num + 1}"
 
             # Determine if this page needs region detection
@@ -303,7 +321,7 @@ def ingest_pdf(
                     else:
                         doc_id = f"{page_doc_id}_region_{region_idx}"
 
-                    snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                    snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
                     if not snippet:
                         snippet = f"Page {page_num + 1} of {filename}"
                     if not is_full_page and region_meta.label:
@@ -350,7 +368,7 @@ def ingest_pdf(
                     failed_docs.append((page_doc_id, f"Embedding error: {e}"))
                     continue
 
-                snippet = page_text[:200] + "..." if len(page_text) > 200 else page_text
+                snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
                 if not snippet:
                     snippet = f"Page {page_num + 1} of {filename}"
 

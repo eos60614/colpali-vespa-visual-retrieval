@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 import asyncpg
 
+from backend.config import get
 from backend.ingestion.exceptions import ConnectionError
 
 
@@ -23,7 +24,11 @@ class ConnectionConfig:
     user: str
     password: str
     ssl: bool = True
-    pool_size: int = 5
+    pool_size: int = None
+
+    def __post_init__(self):
+        if self.pool_size is None:
+            self.pool_size = get("ingestion", "pool_size")
 
     @classmethod
     def from_url(cls, url: str) -> "ConnectionConfig":
@@ -41,7 +46,7 @@ class ConnectionConfig:
 
         return cls(
             host=parsed.hostname,
-            port=parsed.port or 5432,
+            port=parsed.port or get("ingestion", "default_port"),
             database=parsed.path.lstrip("/") if parsed.path else "",
             user=parsed.username or "",
             password=parsed.password or "",
@@ -71,7 +76,7 @@ class DatabaseConnection:
                 user=self._config.user,
                 password=self._config.password,
                 ssl="prefer" if self._config.ssl else "disable",
-                min_size=1,
+                min_size=get("ingestion", "pool_min_size"),
                 max_size=self._config.pool_size,
             )
             self._logger.info(

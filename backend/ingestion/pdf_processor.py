@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
+from backend.config import get
 from backend.ingestion.file_detector import DetectedFile
 
 
@@ -33,7 +34,7 @@ class PDFProcessor:
         self,
         vespa_app: Any,
         logger: Optional[logging.Logger] = None,
-        batch_size: int = 4,
+        batch_size: int = None,
     ):
         """Initialize PDF processor.
 
@@ -44,7 +45,7 @@ class PDFProcessor:
         """
         self._vespa = vespa_app
         self._logger = logger or logging.getLogger(__name__)
-        self._batch_size = batch_size
+        self._batch_size = batch_size if batch_size is not None else get("ingestion", "batch_size")
 
         # Lazy-loaded model components
         self._model = None
@@ -72,7 +73,7 @@ class PDFProcessor:
         self._logger.info(f"Using device: {self._device}")
 
         # Load model and processor
-        model_name = "tsystems/colqwen2.5-3b-multilingual-v1.0"
+        model_name = get("colpali", "model_name")
         self._model = ColQwen2_5.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if self._device != "cpu" else torch.float32,

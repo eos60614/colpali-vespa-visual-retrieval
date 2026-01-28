@@ -1,6 +1,8 @@
 from typing import Optional
 from urllib.parse import quote_plus
 
+from backend.config import get
+
 from fasthtml.components import (
     H1,
     H2,
@@ -109,11 +111,17 @@ toggle_text_content = Script(
     """
 )
 
+_autocomplete_min_chars = get("autocomplete", "min_chars")
+_autocomplete_max_items = get("autocomplete", "max_items")
 autocomplete_script = Script(
     """
     document.addEventListener('DOMContentLoaded', function() {
         const input = document.querySelector('#search-input');
-        const awesomplete = new Awesomplete(input, { minChars: 1, maxItems: 5 });
+        const awesomplete = new Awesomplete(input, { minChars: """
+    + str(_autocomplete_min_chars)
+    + """, maxItems: """
+    + str(_autocomplete_max_items)
+    + """ });
 
         input.addEventListener('input', function() {
             if (this.value.length >= 1) {
@@ -802,7 +810,7 @@ def UploadForm():
                     name="title",
                     id="title",
                     placeholder="Custom document title",
-                    maxlength="200",
+                    maxlength=str(get("app", "validation", "max_title_length")),
                     cls="border border-input rounded-md px-3 py-2",
                 ),
                 cls="grid gap-2",
@@ -813,7 +821,7 @@ def UploadForm():
                     name="description",
                     id="description",
                     placeholder="Brief description of the document",
-                    maxlength="1000",
+                    maxlength=str(get("app", "validation", "max_description_length")),
                     rows="3",
                     cls="border border-input rounded-md px-3 py-2 resize-none w-full",
                 ),
@@ -828,7 +836,7 @@ def UploadForm():
                     placeholder="Comma-separated tags (e.g., finance, report, 2024)",
                     cls="border border-input rounded-md px-3 py-2",
                 ),
-                P("Maximum 20 tags, each up to 50 characters", cls="text-xs text-muted-foreground"),
+                P(f"Maximum {get('app', 'validation', 'max_tags')} tags, each up to {get('app', 'validation', 'max_tag_length')} characters", cls="text-xs text-muted-foreground"),
                 cls="grid gap-2",
             ),
             Button(

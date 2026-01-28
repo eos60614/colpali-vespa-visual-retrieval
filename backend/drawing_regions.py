@@ -16,37 +16,45 @@ Optional overlay: VLM-as-Classifier — labels pre-detected regions semantically
 import io
 import json
 import logging
-import os
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
 
+from backend.config import get
+
 logger = logging.getLogger(__name__)
 
-# Minimum region dimension in pixels to be worth embedding separately
-MIN_REGION_SIZE = 200
-# Minimum pixel area for a region to be considered meaningful
-MIN_REGION_AREA = 100_000
-# Page size threshold (pixels) above which region detection activates
-# At 150 DPI:
-#   - Letter (8.5x11): 1275x1650 = 2.1M pixels (excluded)
-#   - Tabloid (11x17): 1650x2550 = 4.2M pixels (included)
-#   - ARCH D (24x36): 3600x5400 = 19.4M pixels (included)
-#   - Large format (40x32): 6000x4800 = 28.8M pixels (included)
-LARGE_PAGE_THRESHOLD = 1400 * 2000  # ~2.8M pixels - includes 11x17 and above
-# Overlap in pixels between adjacent tiles in the grid fallback
-TILE_OVERLAP = 100
-# Maximum regions to extract from a single page
-MAX_REGIONS = 12
+# Region detection constants from ki55.toml
+MIN_REGION_SIZE = get("drawing_regions", "min_region_size")
+MIN_REGION_AREA = get("drawing_regions", "min_region_area")
+LARGE_PAGE_THRESHOLD = get("drawing_regions", "large_page_threshold")
+TILE_OVERLAP = get("drawing_regions", "tile_overlap")
+MAX_REGIONS = get("drawing_regions", "max_regions")
 
-# PDF vector detection parameters
-BORDER_SPAN_PCT = 0.85          # rectangle spanning >85% of page = border
-ELEMENT_PROXIMITY_PX = 100     # merge elements within 100px gap
-TABLE_MIN_LINES = 3            # minimum h/v lines to detect a table
-TABLE_SPACING_VARIANCE = 0.3   # max std/mean for line spacing regularity
-MIN_VECTOR_PATHS = 10          # minimum vector paths to consider PDF as vector
+# PDF vector detection parameters from ki55.toml
+BORDER_SPAN_PCT = get("drawing_regions", "pdf_vector", "border_span_pct")
+ELEMENT_PROXIMITY_PX = get("drawing_regions", "pdf_vector", "element_proximity_px")
+TABLE_MIN_LINES = get("drawing_regions", "pdf_vector", "table_min_lines")
+TABLE_SPACING_VARIANCE = get("drawing_regions", "pdf_vector", "table_spacing_variance")
+MIN_VECTOR_PATHS = get("drawing_regions", "pdf_vector", "min_vector_paths")
+LINE_Y_THRESHOLD = get("drawing_regions", "pdf_vector", "line_y_threshold")
+MIN_LINE_LENGTH = get("drawing_regions", "pdf_vector", "min_line_length")
+BOUNDARY_TOLERANCE = get("drawing_regions", "pdf_vector", "boundary_tolerance")
+BORDER_TOLERANCE = get("drawing_regions", "pdf_vector", "border_tolerance")
+CONTAINED_TOLERANCE = get("drawing_regions", "pdf_vector", "contained_tolerance")
+TINY_PATH_THRESHOLD = get("drawing_regions", "pdf_vector", "tiny_path_threshold")
+
+# Confidence scores from ki55.toml
+TABLE_REGION_CONFIDENCE = get("drawing_regions", "confidence", "table_region")
+FRAMED_REGION_CONFIDENCE = get("drawing_regions", "confidence", "framed_region")
+CLUSTER_REGION_CONFIDENCE = get("drawing_regions", "confidence", "cluster_region")
+CONTAINMENT_RATIO = get("drawing_regions", "confidence", "containment_ratio")
+
+# Heuristic detection parameters from ki55.toml
+DENSITY_SCALING_FACTOR = get("drawing_regions", "density_scaling_factor")
+NEIGHBORHOOD_DIVISOR = get("drawing_regions", "neighborhood_divisor")
 
 
 @dataclass
@@ -156,10 +164,10 @@ def _detect_tables_from_lines(drawings, page_width, page_height, dpi_scale):
                 x1, y1 = p1.x, p1.y
                 x2, y2 = p2.x, p2.y
                 # Horizontal line (y values close)
-                if abs(y2 - y1) < 2 and abs(x2 - x1) > 20:
+                if abs(y2 - y1) < LINE_Y_THRESHOLD and abs(x2 - x1) > MIN_LINE_LENGTH:
                     h_lines.append((min(y1, y2), min(x1, x2), max(x1, x2)))
                 # Vertical line (x values close)
-                elif abs(x2 - x1) < 2 and abs(y2 - y1) > 20:
+                elif abs(x2 - x1) < LINE_Y_THRESHOLD and abs(y2 - y1) > MIN_LINE_LENGTH:
                     v_lines.append((min(x1, x2), min(y1, y2), max(y1, y2)))
 
     if len(h_lines) < TABLE_MIN_LINES or len(v_lines) < TABLE_MIN_LINES:
@@ -198,7 +206,7 @@ def _detect_tables_from_lines(drawings, page_width, page_height, dpi_scale):
         # Check if there are vertical lines overlapping this region
         matching_v = [v for v in v_lines
                       if v[1] <= h_max and v[2] >= h_min
-                      and v[0] >= x_min - 10 and v[0] <= x_max + 10]
+                      and v[0] >= x_min - BOUNDARY_TOLERANCE and v[0] <= x_max + BOUNDARY_TOLERANCE]
         if len(matching_v) < TABLE_MIN_LINES:
             continue
 
@@ -212,7 +220,7 @@ def _detect_tables_from_lines(drawings, page_width, page_height, dpi_scale):
             tables.append(DetectedRegion(
                 x=px_x, y=px_y, width=px_w, height=px_h,
                 label="table", region_type="detected",
-                content_hint="table", confidence=0.9,
+                content_hint="table", confidence=TABLE_REGION_CONFIDENCE,
             ))
 
     return tables
@@ -310,7 +318,7 @@ def _classify_cluster(cluster_bbox, drawing_bboxes, text_bboxes):
         return "detail"
 
 
-def _find_framing_rects(drawings, page_width, page_height, border_rects, min_area_pct=0.02):
+def _find_framing_rects(drawings, page_width, page_height, border_rects, min_area_pct=None):
     """
     Find internal framing rectangles that define content regions.
 
@@ -328,6 +336,8 @@ def _find_framing_rects(drawings, page_width, page_height, border_rects, min_are
     Returns:
         List of (x0, y0, x1, y1) tuples in point coordinates
     """
+    if min_area_pct is None:
+        min_area_pct = get("drawing_regions", "pdf_vector", "framing_rect_min_area_pct")
     page_area = page_width * page_height
     min_area = page_area * min_area_pct
     framing_rects = []
@@ -348,8 +358,8 @@ def _find_framing_rects(drawings, page_width, page_height, border_rects, min_are
         # Skip if it's a page border
         is_border = False
         for bx0, by0, bx1, by1 in border_rects:
-            if (abs(x0 - bx0) < 5 and abs(y0 - by0) < 5 and
-                    abs(x1 - bx1) < 5 and abs(y1 - by1) < 5):
+            if (abs(x0 - bx0) < BORDER_TOLERANCE and abs(y0 - by0) < BORDER_TOLERANCE and
+                    abs(x1 - bx1) < BORDER_TOLERANCE and abs(y1 - by1) < BORDER_TOLERANCE):
                 is_border = True
                 break
         if is_border:
@@ -376,8 +386,8 @@ def _find_framing_rects(drawings, page_width, page_height, border_rects, min_are
             # Deduplicate: don't add if we already have a very similar rect
             is_dup = False
             for fx0, fy0, fx1, fy1 in framing_rects:
-                if (abs(x0 - fx0) < 10 and abs(y0 - fy0) < 10 and
-                        abs(x1 - fx1) < 10 and abs(y1 - fy1) < 10):
+                if (abs(x0 - fx0) < BOUNDARY_TOLERANCE and abs(y0 - fy0) < BOUNDARY_TOLERANCE and
+                        abs(x1 - fx1) < BOUNDARY_TOLERANCE and abs(y1 - fy1) < BOUNDARY_TOLERANCE):
                     is_dup = True
                     break
             if not is_dup:
@@ -399,12 +409,12 @@ def _remove_contained_rects(rects):
             if i == j:
                 continue
             # Check if rect i is fully inside rect j (with tolerance)
-            if (x0 >= ox0 - 5 and y0 >= oy0 - 5 and
-                    x1 <= ox1 + 5 and y1 <= oy1 + 5):
+            if (x0 >= ox0 - CONTAINED_TOLERANCE and y0 >= oy0 - CONTAINED_TOLERANCE and
+                    x1 <= ox1 + CONTAINED_TOLERANCE and y1 <= oy1 + CONTAINED_TOLERANCE):
                 # Only remove if the outer rect is strictly larger
                 outer_area = (ox1 - ox0) * (oy1 - oy0)
                 inner_area = (x1 - x0) * (y1 - y0)
-                if inner_area < outer_area * 0.95:
+                if inner_area < outer_area * CONTAINMENT_RATIO:
                     contained = True
                     break
         if not contained:
@@ -480,14 +490,14 @@ def detect_regions_pdf_vector(
         # Skip border rectangles
         is_border = False
         for bx0, by0, bx1, by1 in border_rects:
-            if (abs(x0 - bx0) < 5 and abs(y0 - by0) < 5 and
-                    abs(x1 - bx1) < 5 and abs(y1 - by1) < 5):
+            if (abs(x0 - bx0) < BORDER_TOLERANCE and abs(y0 - by0) < BORDER_TOLERANCE and
+                    abs(x1 - bx1) < BORDER_TOLERANCE and abs(y1 - by1) < BORDER_TOLERANCE):
                 is_border = True
                 break
         if is_border:
             continue
         # Skip tiny paths
-        if (x1 - x0) < 5 and (y1 - y0) < 5:
+        if (x1 - x0) < TINY_PATH_THRESHOLD and (y1 - y0) < TINY_PATH_THRESHOLD:
             continue
         drawing_bboxes.append((x0, y0, x1, y1))
 
@@ -530,7 +540,7 @@ def detect_regions_pdf_vector(
         framed_regions.append(DetectedRegion(
             x=px_x, y=px_y, width=px_w, height=px_h,
             region_type="detected", content_hint=content_hint,
-            confidence=0.9,
+            confidence=FRAMED_REGION_CONFIDENCE,
         ))
         framed_areas_pts.append((fx0, fy0, fx1, fy1))
 
@@ -552,7 +562,7 @@ def detect_regions_pdf_vector(
         bx0, by0, bx1, by1 = bbox
         in_claimed = False
         for cx0, cy0, cx1, cy1 in claimed_areas_pts:
-            if bx0 >= cx0 - 5 and by0 >= cy0 - 5 and bx1 <= cx1 + 5 and by1 <= cy1 + 5:
+            if bx0 >= cx0 - CONTAINED_TOLERANCE and by0 >= cy0 - CONTAINED_TOLERANCE and bx1 <= cx1 + CONTAINED_TOLERANCE and by1 <= cy1 + CONTAINED_TOLERANCE:
                 in_claimed = True
                 break
         if not in_claimed:
@@ -588,7 +598,7 @@ def detect_regions_pdf_vector(
         cluster_regions.append(DetectedRegion(
             x=px_x, y=px_y, width=px_w, height=px_h,
             region_type="detected", content_hint=content_hint,
-            confidence=0.85,
+            confidence=CLUSTER_REGION_CONFIDENCE,
         ))
 
     # Combine all region types
@@ -634,15 +644,18 @@ def detect_regions_heuristic(
     gray = np.array(image.convert("L"))
 
     # Threshold: pixels below 240 are "content" (drawings are mostly black on white)
-    content_mask = gray < 240
+    content_thresh = get("drawing_regions", "content_threshold")
+    content_mask = gray < content_thresh
 
     # Find horizontal whitespace bands (rows with very little content)
     row_density = content_mask.mean(axis=1)  # fraction of content pixels per row
-    h_splits = _find_splits(row_density, min_gap=50, threshold=0.02)
+    min_gap = get("drawing_regions", "min_gap")
+    ws_threshold = get("drawing_regions", "whitespace_threshold")
+    h_splits = _find_splits(row_density, min_gap=min_gap, threshold=ws_threshold)
 
     # Find vertical whitespace bands (columns with very little content)
     col_density = content_mask.mean(axis=0)  # fraction of content pixels per column
-    v_splits = _find_splits(col_density, min_gap=50, threshold=0.02)
+    v_splits = _find_splits(col_density, min_gap=min_gap, threshold=ws_threshold)
 
     # Add image boundaries
     h_boundaries = [0] + h_splits + [h]
@@ -667,13 +680,14 @@ def detect_regions_heuristic(
 
             # Check if region actually has meaningful content
             region_content = content_mask[y1:y2, x1:x2]
-            if region_content.mean() < 0.005:  # Less than 0.5% content = empty
+            content_density_threshold = get("drawing_regions", "content_density_threshold")
+            if region_content.mean() < content_density_threshold:
                 continue
 
             regions.append(DetectedRegion(
                 x=x1, y=y1, width=rw, height=rh,
                 region_type="detected",
-                confidence=min(1.0, region_content.mean() * 10),  # Scale content density
+                confidence=min(1.0, region_content.mean() * DENSITY_SCALING_FACTOR),
             ))
 
     # If heuristic detection found too few or too many regions, fall back to tiling
@@ -742,7 +756,7 @@ def _generate_tiles(
     # Target tile size: aim for tiles that give ColPali good coverage
     # ColPali input is typically resized to ~768-1024px, so tiles of ~1500-2000px
     # give 2:1 compression ratio instead of the original 6:1+
-    target_tile = 1800
+    target_tile = get("drawing_regions", "target_tile_size")
     overlap = TILE_OVERLAP
 
     tiles = []
@@ -808,11 +822,12 @@ def detect_regions_content_aware_tiling(
     w, h = image.size
     gray = np.array(image.convert("L"))
 
-    # Content mask (pixels below 240 are content)
-    content_mask = (gray < 240).astype(np.float32)
+    # Content mask (pixels below threshold are content)
+    content_thresh = get("drawing_regions", "content_threshold")
+    content_mask = (gray < content_thresh).astype(np.float32)
 
-    # Compute coarse density on a 50x50 grid
-    grid_size = 50
+    # Compute coarse density on a grid
+    grid_size = get("drawing_regions", "grid_size")
     rows_per_cell = max(1, h // grid_size)
     cols_per_cell = max(1, w // grid_size)
 
@@ -821,7 +836,7 @@ def detect_regions_content_aware_tiling(
     col_density = content_mask.mean(axis=0)
 
     # Target tile size
-    target_tile = 1800
+    target_tile = get("drawing_regions", "target_tile_size")
     overlap = TILE_OVERLAP
 
     # Calculate how many tiles we need
@@ -894,7 +909,7 @@ def _find_density_minima_splits(density, n_splits, window=50):
         # Find the position with minimum average density in a small neighborhood
         best_pos = ideal
         best_score = float("inf")
-        neighborhood = max(1, window // 5)
+        neighborhood = max(1, window // NEIGHBORHOOD_DIVISOR)
 
         for pos in range(start, end):
             region_start = max(0, pos - neighborhood)
@@ -913,7 +928,7 @@ def classify_regions_vlm(
     image: Image.Image,
     regions: List[DetectedRegion],
     api_key: Optional[str] = None,
-    model: str = "anthropic/claude-sonnet-4",
+    model: str = None,
     base_url: Optional[str] = None,
 ) -> List[DetectedRegion]:
     """
@@ -941,21 +956,18 @@ def classify_regions_vlm(
         logger.warning("httpx not installed, skipping VLM classification")
         return regions
 
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        api_key = openrouter_key or openai_key or ""
-    if not base_url:
-        explicit_base = os.environ.get("LLM_BASE_URL")
-        if explicit_base:
-            base_url = explicit_base
-        elif openai_key and not openrouter_key:
-            base_url = "https://api.openai.com/v1"
-        else:
-            base_url = "https://openrouter.ai/api/v1"
+    from backend.llm_config import resolve_llm_config, is_remote_api, build_auth_headers
 
-    is_remote = "openrouter.ai" in base_url or "openai.com" in base_url
-    if is_remote and not api_key:
+    if model is None:
+        model = get("llm", "vlm_model")
+    if not base_url or not api_key:
+        resolved_url, resolved_key = resolve_llm_config()
+        if not base_url:
+            base_url = resolved_url
+        if not api_key:
+            api_key = resolved_key
+
+    if is_remote_api(base_url) and not api_key:
         logger.warning("No API key for VLM classification, returning unlabeled regions")
         return regions
 
@@ -974,15 +986,16 @@ def classify_regions_vlm(
 
     # Downscale for API
     w, h = annotated.size
-    max_api_dim = 1500
+    max_api_dim = get("image", "max_api_dimension")
     scale = min(max_api_dim / w, max_api_dim / h, 1.0)
     if scale < 1.0:
         annotated = annotated.resize(
             (int(w * scale), int(h * scale)), Image.Resampling.LANCZOS
         )
 
+    vlm_jpeg_quality = get("image", "vlm_jpeg_quality")
     buffer = io.BytesIO()
-    annotated.save(buffer, format="JPEG", quality=80)
+    annotated.save(buffer, format="JPEG", quality=vlm_jpeg_quality)
     import base64
     image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
@@ -994,16 +1007,16 @@ Respond with ONLY a JSON object mapping region numbers to labels:
 {{"1": "floor plan", "2": "door schedule", "3": "general notes", ...}}"""
 
     try:
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers = build_auth_headers(api_key)
+        vlm_classifier_max_tokens = get("llm", "vlm_classifier_max_tokens")
+        vlm_timeout = get("llm", "vlm_timeout_seconds")
 
         response = httpx.post(
             f"{base_url}/chat/completions",
             headers=headers,
             json={
                 "model": model,
-                "max_tokens": 1000,
+                "max_tokens": vlm_classifier_max_tokens,
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -1015,7 +1028,7 @@ Respond with ONLY a JSON object mapping region numbers to labels:
                     ],
                 }],
             },
-            timeout=60.0,
+            timeout=vlm_timeout,
         )
         response.raise_for_status()
         result = response.json()
@@ -1042,7 +1055,7 @@ Respond with ONLY a JSON object mapping region numbers to labels:
 def detect_regions_vlm_legacy(
     image: Image.Image,
     api_key: Optional[str] = None,
-    model: str = "anthropic/claude-sonnet-4",
+    model: str = None,
     base_url: Optional[str] = None,
 ) -> List[DetectedRegion]:
     """
@@ -1056,7 +1069,7 @@ def detect_regions_vlm_legacy(
         image: PIL Image (full drawing page)
         api_key: API key (checks OPENROUTER_API_KEY then OPENAI_API_KEY; not needed for Ollama)
         model: Model identifier to use for detection
-        base_url: API base URL (defaults to LLM_BASE_URL env var, then OpenRouter)
+        base_url: API base URL (defaults to LLM_BASE_URL env var)
 
     Returns:
         List of DetectedRegion objects with semantic labels
@@ -1067,28 +1080,25 @@ def detect_regions_vlm_legacy(
         logger.warning("httpx package not installed, falling back to heuristic detection")
         return detect_regions_heuristic(image)
 
-    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        api_key = openrouter_key or openai_key or ""
-    if not base_url:
-        explicit_base = os.environ.get("LLM_BASE_URL")
-        if explicit_base:
-            base_url = explicit_base
-        elif openai_key and not openrouter_key:
-            base_url = "https://api.openai.com/v1"
-        else:
-            base_url = "https://openrouter.ai/api/v1"
+    from backend.llm_config import resolve_llm_config, is_remote_api, build_auth_headers
 
-    is_remote = "openrouter.ai" in base_url or "openai.com" in base_url
-    if is_remote and not api_key:
-        logger.warning("No API key set (checked OPENROUTER_API_KEY, OPENAI_API_KEY), falling back to heuristic detection")
+    if model is None:
+        model = get("llm", "vlm_model")
+    if not base_url or not api_key:
+        resolved_url, resolved_key = resolve_llm_config()
+        if not base_url:
+            base_url = resolved_url
+        if not api_key:
+            api_key = resolved_key
+
+    if is_remote_api(base_url) and not api_key:
+        logger.warning("No API key set, falling back to heuristic detection")
         return detect_regions_heuristic(image)
 
     w, h = image.size
 
     # Downscale for the API call (we just need region locations, not full detail)
-    max_api_dim = 1500
+    max_api_dim = get("image", "max_api_dimension")
     scale = min(max_api_dim / w, max_api_dim / h, 1.0)
     if scale < 1.0:
         api_image = image.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
@@ -1096,8 +1106,9 @@ def detect_regions_vlm_legacy(
         api_image = image
 
     # Convert to base64
+    vlm_jpeg_quality = get("image", "vlm_jpeg_quality")
     buffer = io.BytesIO()
-    api_image.save(buffer, format="JPEG", quality=80)
+    api_image.save(buffer, format="JPEG", quality=vlm_jpeg_quality)
     import base64
     image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
@@ -1125,16 +1136,16 @@ Rules:
 - Maximum {MAX_REGIONS} regions"""
 
     try:
-        headers = {"Content-Type": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        headers = build_auth_headers(api_key)
+        vlm_max_tokens = get("llm", "vlm_max_tokens")
+        vlm_timeout = get("llm", "vlm_timeout_seconds")
 
         response = httpx.post(
             f"{base_url}/chat/completions",
             headers=headers,
             json={
                 "model": model,
-                "max_tokens": 2000,
+                "max_tokens": vlm_max_tokens,
                 "messages": [{
                     "role": "user",
                     "content": [
@@ -1148,7 +1159,7 @@ Rules:
                     ],
                 }],
             },
-            timeout=60.0,
+            timeout=vlm_timeout,
         )
         response.raise_for_status()
         result = response.json()
@@ -1191,7 +1202,7 @@ Rules:
 def extract_region_images(
     image: Image.Image,
     regions: List[DetectedRegion],
-    padding: int = 20,
+    padding: int = None,
 ) -> List[Tuple[Image.Image, DetectedRegion]]:
     """
     Crop region images from the full drawing.
@@ -1204,6 +1215,8 @@ def extract_region_images(
     Returns:
         List of (cropped_image, region) tuples
     """
+    if padding is None:
+        padding = get("drawing_regions", "region_extract_padding")
     w, h = image.size
     results = []
 

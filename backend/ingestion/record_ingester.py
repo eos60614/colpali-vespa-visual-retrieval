@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, AsyncIterator, Optional
 
+from backend.config import get
 from backend.ingestion.db_connection import DatabaseConnection
 from backend.ingestion.exceptions import IndexError, TransformError
 from backend.ingestion.schema_discovery import FileReferenceType, SchemaMap
@@ -231,7 +232,7 @@ class RecordIngester:
     async def ingest_table(
         self,
         table: str,
-        batch_size: int = 10000,
+        batch_size: int = None,
         since: Optional[datetime] = None,
     ) -> AsyncIterator[IngestionResult]:
         """Ingest records from a table.
@@ -244,6 +245,9 @@ class RecordIngester:
         Yields:
             IngestionResult for each processed record
         """
+        if batch_size is None:
+            batch_size = get("ingestion", "default_batch_size")
+
         # Build query
         if since:
             query = f"""
@@ -603,7 +607,7 @@ class RecordIngester:
 
             # Feed to Vespa (synchronous call)
             self._vespa.feed_data_point(
-                schema="procore_record",
+                schema=get("vespa", "procore_record_schema"),
                 data_id=record.doc_id,
                 fields=doc,
             )

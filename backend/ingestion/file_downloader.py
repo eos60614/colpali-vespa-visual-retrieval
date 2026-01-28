@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Optional
 
 import aiohttp
 
+from backend.config import get
 from backend.ingestion.exceptions import DownloadError
 from backend.ingestion.file_detector import DetectedFile
 
@@ -38,10 +39,10 @@ class FileDownloader:
     """Download files from S3/URLs for indexing."""
 
     # Supported file types for visual retrieval
-    SUPPORTED_TYPES = {"pdf", "jpg", "jpeg", "png", "gif", "tiff"}
+    SUPPORTED_TYPES = set(get("ingestion", "files", "supported_types"))
 
-    # Maximum file size (100MB)
-    MAX_FILE_SIZE = 100 * 1024 * 1024
+    # Maximum file size
+    MAX_FILE_SIZE = get("ingestion", "files", "max_file_size_mb") * 1024 * 1024
 
     def __init__(
         self,
@@ -157,7 +158,7 @@ class FileDownloader:
 
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(file.url, timeout=aiohttp.ClientTimeout(total=300)) as response:
+                async with session.get(file.url, timeout=aiohttp.ClientTimeout(total=get("ingestion", "files", "download_timeout_seconds"))) as response:
                     if response.status != 200:
                         return DownloadResult(
                             s3_key=file.s3_key,
@@ -178,7 +179,7 @@ class FileDownloader:
 
                     # Download to file
                     with open(local_path, "wb") as f:
-                        async for chunk in response.content.iter_chunked(8192):
+                        async for chunk in response.content.iter_chunked(get("ingestion", "files", "chunk_size")):
                             f.write(chunk)
 
                     file_size = local_path.stat().st_size
@@ -232,7 +233,7 @@ class FileDownloader:
                     "s3",
                     aws_access_key_id=self._aws_config.get("AWS_ACCESS_KEY_ID"),
                     aws_secret_access_key=self._aws_config.get("AWS_SECRET_ACCESS_KEY"),
-                    region_name=self._aws_config.get("AWS_REGION", "us-east-1"),
+                    region_name=self._aws_config.get("AWS_REGION", get("ingestion", "files", "s3_default_region")),
                 )
             except Exception as e:
                 return DownloadResult(
@@ -251,7 +252,7 @@ class FileDownloader:
         try:
             # Extract bucket and key from S3 key
             # Assuming S3 key format: bucket/path/to/file or just path/to/file
-            bucket = self._aws_config.get("S3_BUCKET", "procore-files")
+            bucket = self._aws_config.get("S3_BUCKET", get("ingestion", "files", "s3_default_bucket"))
             key = file.s3_key
 
             # Download file

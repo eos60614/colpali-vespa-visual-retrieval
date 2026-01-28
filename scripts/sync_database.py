@@ -17,6 +17,7 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from backend.config import get, get_env
 from backend.ingestion.checkpoint import CheckpointStore
 from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
 from backend.ingestion.schema_discovery import SchemaDiscovery
@@ -64,8 +65,8 @@ Examples:
     parser.add_argument(
         "--vespa-url",
         type=str,
-        default=os.environ.get("VESPA_LOCAL_URL", "http://localhost:8080"),
-        help="Vespa endpoint URL (default: $VESPA_LOCAL_URL or localhost:8080)",
+        default=get_env("VESPA_LOCAL_URL") or get("app", "default_vespa_url"),
+        help="Vespa endpoint URL",
     )
 
     # Mode selection
@@ -90,8 +91,8 @@ Examples:
     parser.add_argument(
         "--interval",
         type=int,
-        default=300,
-        help="Sync interval in seconds for daemon mode (default: 300)",
+        default=get("ingestion", "sync", "sync_interval_seconds"),
+        help="Sync interval in seconds for daemon mode",
     )
     parser.add_argument(
         "--pid-file",
@@ -120,8 +121,8 @@ Examples:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=1000,
-        help="Records per batch (default: 1000)",
+        default=get("ingestion", "sync", "streaming_batch_size"),
+        help="Records per batch",
     )
 
     # File processing options
@@ -133,8 +134,8 @@ Examples:
     parser.add_argument(
         "--file-workers",
         type=int,
-        default=2,
-        help="Parallel workers for file downloads (default: 2)",
+        default=get("ingestion", "files", "download_workers"),
+        help="Parallel workers for file downloads",
     )
     parser.add_argument(
         "--process-pdfs",

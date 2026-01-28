@@ -17,6 +17,10 @@ from vidore_benchmark.interpretability.torch_utils import (
 from functools import lru_cache
 import logging
 
+from backend.config import get
+
+_CACHE_MAXSIZE = get("colpali", "lru_cache_maxsize")
+
 
 class SimMapGenerator:
     """
@@ -28,8 +32,8 @@ class SimMapGenerator:
     def __init__(
         self,
         logger: logging.Logger,
-        model_name: str = "tsystems/colqwen2.5-3b-multilingual-v1.0",
-        n_patch: int = 32,
+        model_name: str = None,
+        n_patch: int = None,
     ):
         """
         Initializes the SimMapGenerator class with a specified model and patch dimension.
@@ -38,8 +42,8 @@ class SimMapGenerator:
             model_name (str): The model name for loading the ColQwen2.5 model.
             n_patch (int): The number of patches per dimension.
         """
-        self.model_name = model_name
-        self.n_patch = n_patch
+        self.model_name = model_name or get("colpali", "model_name")
+        self.n_patch = n_patch or get("colpali", "n_patch")
         self.device = get_torch_device("auto")
         self.logger = logger
         self.logger.info(f"Using device: {self.device}")
@@ -152,7 +156,7 @@ class SimMapGenerator:
                 if hasattr(self.processor, "image_seq_length"):
                     image_seq_length = self.processor.image_seq_length
                 else:
-                    image_seq_length = 1024
+                    image_seq_length = get("colpali", "image_seq_length_fallback")
 
                 if patch >= image_seq_length:
                     continue
@@ -178,7 +182,7 @@ class SimMapGenerator:
         Returns:
             str: The base64-encoded blended image.
         """
-        SCALING_FACTOR = 8
+        SCALING_FACTOR = get("colpali", "scaling_factor")
         sim_map_resolution = (
             max(32, int(original_size[0] / SCALING_FACTOR)),
             max(32, int(original_size[1] / SCALING_FACTOR)),
@@ -260,7 +264,7 @@ class SimMapGenerator:
         )
         return bool(pattern.match(token))
 
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=_CACHE_MAXSIZE)
     def get_query_embeddings_and_token_map(
         self, query: str
     ) -> Tuple[torch.Tensor, dict]:

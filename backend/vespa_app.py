@@ -11,12 +11,14 @@ from .colpali import SimMapGenerator
 import backend.stopwords
 import logging
 
+from backend.config import get
+
 
 class VespaQueryClient:
-    MAX_QUERY_TERMS = 64
-    VESPA_SCHEMA_NAME = "pdf_page"
-    SELECT_FIELDS = "id,title,url,blur_image,page_number,snippet,text"
-    SELECT_FIELDS_WITH_EMBEDDING = "id,title,url,blur_image,page_number,snippet,text,embedding_float"
+    MAX_QUERY_TERMS = get("vespa", "max_query_terms")
+    VESPA_SCHEMA_NAME = get("vespa", "schema_name")
+    SELECT_FIELDS = get("vespa", "select_fields")
+    SELECT_FIELDS_WITH_EMBEDDING = get("vespa", "select_fields_with_embedding")
 
     def __init__(self, logger: logging.Logger):
         """
@@ -53,11 +55,11 @@ class VespaQueryClient:
                 )
 
             # write the key and cert to a file
-            mtls_key_path = "/tmp/vespa-data-plane-private-key.pem"
+            mtls_key_path = get("vespa", "mtls", "key_path")
             with open(mtls_key_path, "w") as f:
                 f.write(mtls_key)
 
-            mtls_cert_path = "/tmp/vespa-data-plane-public-cert.pem"
+            mtls_cert_path = get("vespa", "mtls", "cert_path")
             with open(mtls_cert_path, "w") as f:
                 f.write(mtls_cert)
 
@@ -122,8 +124,8 @@ class VespaQueryClient:
         self,
         query: str,
         q_emb: torch.Tensor,
-        hits: int = 3,
-        timeout: str = "10s",
+        hits: int = None,
+        timeout: str = None,
         sim_map: bool = False,
         **kwargs,
     ) -> dict:
@@ -140,7 +142,10 @@ class VespaQueryClient:
         Returns:
             dict: The formatted query results.
         """
-        async with self.app.asyncio(connections=1) as session:
+        hits = hits or get("vespa", "default_hits")
+        timeout = timeout or get("vespa", "query_timeout")
+        connection_count = get("vespa", "connection_count")
+        async with self.app.asyncio(connections=connection_count) as session:
             query_embedding = self.format_q_embs(q_emb)
 
             start = time.perf_counter()
@@ -192,7 +197,7 @@ class VespaQueryClient:
         return binary_query_embeddings
 
     def create_nn_query_strings(
-        self, binary_query_embeddings: dict, target_hits_per_query_tensor: int = 20
+        self, binary_query_embeddings: dict, target_hits_per_query_tensor: int = None
     ) -> Tuple[str, dict]:
         """
         Create nearest neighbor query strings for Vespa.
@@ -204,6 +209,8 @@ class VespaQueryClient:
         Returns:
             Tuple[str, dict]: Nearest neighbor query string and query tensor dictionary.
         """
+        if target_hits_per_query_tensor is None:
+            target_hits_per_query_tensor = get("vespa", "target_hits_per_query_tensor")
         nn_query_dict = {}
         for i in range(len(binary_query_embeddings)):
             nn_query_dict[f"input.query(rq{i})"] = binary_query_embeddings[i]
@@ -346,7 +353,8 @@ class VespaQueryClient:
         Returns:
             str: The full image data.
         """
-        async with self.app.asyncio(connections=1) as session:
+        connection_count = get("vespa", "connection_count")
+        async with self.app.asyncio(connections=connection_count) as session:
             start = time.perf_counter()
             response: VespaQueryResponse = await session.query(
                 body={
@@ -382,7 +390,8 @@ class VespaQueryClient:
         return self.get_results_children(result)
 
     async def get_suggestions(self, query: str) -> list:
-        async with self.app.asyncio(connections=1) as session:
+        connection_count = get("vespa", "connection_count")
+        async with self.app.asyncio(connections=connection_count) as session:
             start = time.perf_counter()
             yql = f'select questions from {self.VESPA_SCHEMA_NAME} where questions matches (".*{query}.*")'
             response: VespaQueryResponse = await session.query(
@@ -431,10 +440,10 @@ class VespaQueryClient:
         query: str,
         ranking: str,
         q_emb: torch.Tensor,
-        target_hits_per_query_tensor: int = 100,
-        hnsw_explore_additional_hits: int = 300,
-        hits: int = 3,
-        timeout: str = "10s",
+        target_hits_per_query_tensor: int = None,
+        hnsw_explore_additional_hits: int = None,
+        hits: int = None,
+        timeout: str = None,
         sim_map: bool = False,
         include_embedding: bool = False,
         **kwargs,
@@ -456,7 +465,15 @@ class VespaQueryClient:
         Returns:
             dict: The formatted query results.
         """
-        async with self.app.asyncio(connections=1) as session:
+        if target_hits_per_query_tensor is None:
+            target_hits_per_query_tensor = get("vespa", "target_hits_per_query_tensor")
+        if hnsw_explore_additional_hits is None:
+            hnsw_explore_additional_hits = get("vespa", "hnsw_explore_additional_hits")
+        hits = hits or get("vespa", "default_hits")
+        timeout = timeout or get("vespa", "query_timeout")
+        connection_count = get("vespa", "connection_count")
+        rerank_count = get("vespa", "rerank_count")
+        async with self.app.asyncio(connections=connection_count) as session:
             float_query_embedding = self.format_q_embs(q_emb)
             binary_query_embeddings = self.float_to_binary_embedding(
                 float_query_embedding
@@ -485,7 +502,7 @@ class VespaQueryClient:
                     "hits": hits,
                     "query": query,
                     "hnsw.exploreAdditionalHits": hnsw_explore_additional_hits,
-                    "ranking.rerankCount": 100,
+                    "ranking.rerankCount": rerank_count,
                     **kwargs,
                 },
             )
@@ -499,13 +516,15 @@ class VespaQueryClient:
         Returns:
             bool: True if the connection is alive.
         """
-        async with self.app.asyncio(connections=1) as session:
+        connection_count = get("vespa", "connection_count")
+        keepalive_timeout = get("vespa", "keepalive_timeout")
+        async with self.app.asyncio(connections=connection_count) as session:
             response: VespaQueryResponse = await session.query(
                 body={
                     "yql": f"select title from {self.VESPA_SCHEMA_NAME} where true limit 1;",
                     "ranking": "unranked",
                     "query": "keepalive",
-                    "timeout": "3s",
+                    "timeout": keepalive_timeout,
                     "hits": 1,
                 },
             )

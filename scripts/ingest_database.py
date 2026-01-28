@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tqdm import tqdm
 
+from backend.config import get, get_env
 from backend.ingestion.checkpoint import CheckpointStore
 from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
 from backend.ingestion.schema_discovery import SchemaDiscovery
@@ -68,8 +69,8 @@ Examples:
     parser.add_argument(
         "--vespa-url",
         type=str,
-        default=os.environ.get("VESPA_LOCAL_URL", "http://localhost:8080"),
-        help="Vespa endpoint URL (default: $VESPA_LOCAL_URL or localhost:8080)",
+        default=get_env("VESPA_LOCAL_URL") or get("app", "default_vespa_url"),
+        help="Vespa endpoint URL",
     )
 
     # Mode selection

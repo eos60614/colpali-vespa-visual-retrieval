@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
+from backend.config import get, get_env
 from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
 from backend.ingestion.schema_discovery import SchemaDiscovery
 from backend.ingestion.record_ingester import RecordIngester
@@ -25,7 +26,9 @@ import aiohttp
 class SimpleVespaClient:
     """Simple async Vespa client for feeding documents."""
 
-    def __init__(self, url: str = "http://localhost:8080"):
+    def __init__(self, url: str = None):
+        if url is None:
+            url = get_env("VESPA_LOCAL_URL") or get("app", "default_vespa_url")
         self.url = url.rstrip("/")
         self.session = None
 
@@ -70,7 +73,7 @@ async def main():
     print("  ✓ Database connected")
 
     # Connect to Vespa
-    vespa = SimpleVespaClient("http://localhost:8080")
+    vespa = SimpleVespaClient()
     await vespa.connect()
     print("  ✓ Vespa connected")
 
@@ -165,7 +168,9 @@ async def main():
 
         async with aiohttp.ClientSession() as session:
             # Query total count
-            query_url = "http://localhost:8080/search/?yql=select%20*%20from%20procore_record%20where%20true&hits=0"
+            vespa_base = get_env("VESPA_LOCAL_URL") or get("app", "default_vespa_url")
+            procore_schema = get("vespa", "procore_record_schema")
+            query_url = f"{vespa_base}/search/?yql=select%20*%20from%20{procore_schema}%20where%20true&hits=0"
             async with session.get(query_url) as resp:
                 if resp.status == 200:
                     data = await resp.json()
@@ -173,7 +178,7 @@ async def main():
                     print(f"\n  Total documents in Vespa: {total}")
 
             # Sample query
-            sample_url = "http://localhost:8080/search/?yql=select%20doc_id,source_table,table_description%20from%20procore_record%20where%20true&hits=5"
+            sample_url = f"{vespa_base}/search/?yql=select%20doc_id,source_table,table_description%20from%20{procore_schema}%20where%20true&hits=5"
             async with session.get(sample_url) as resp:
                 if resp.status == 200:
                     data = await resp.json()

@@ -16,6 +16,7 @@ from typing import AsyncGenerator
 import httpx
 from PIL import Image
 
+from backend.config import get
 from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 
 logger = logging.getLogger("vespa_app")
@@ -104,8 +105,8 @@ STRICT CITATION RULES:
 FORMAT: Use only simple HTML tags: <b>, <p>, <i>, <br>, <ul>, <li>. No backticks or tables.
 """
 
-MAX_AGENT_STEPS = 5
-IMG_DIR = Path("static/full_images")
+MAX_AGENT_STEPS = get("agent", "max_steps")
+IMG_DIR = Path(get("agent", "img_dir"))
 
 
 class AgentSession:
@@ -130,8 +131,8 @@ class AgentSession:
             ranking=ranking,
             idx_to_token=idx_to_token,
             rerank=True,
-            rerank_hits=20,
-            final_hits=3,
+            rerank_hits=get("search", "rerank_hits"),
+            final_hits=get("search", "final_hits"),
         )
 
         children = result.get("root", {}).get("children", [])
@@ -148,8 +149,8 @@ class AgentSession:
                 "title": fields.get("title", "Unknown"),
                 "page_number": fields.get("page_number", 0) + 1,
                 "relevance": child.get("relevance", 0),
-                "snippet": fields.get("snippet", "")[:200],
-                "text_preview": (fields.get("text", "") or "")[:300],
+                "snippet": fields.get("snippet", "")[:get("agent", "snippet_preview_length")],
+                "text_preview": (fields.get("text", "") or "")[:get("agent", "text_preview_length")],
             })
 
         return {
@@ -174,7 +175,8 @@ class AgentSession:
         """Collect available images for the gathered doc_ids."""
         images = []
 
-        for doc_id in self.all_doc_ids[:5]:  # Max 5 images
+        max_images = get("agent", "max_images")
+        for doc_id in self.all_doc_ids[:max_images]:
             img_path = IMG_DIR / f"{doc_id}.jpg"
             if not img_path.exists():
                 # Fetch from Vespa
@@ -199,7 +201,7 @@ class AgentSession:
         parts = []
         for img in images:
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
+            img.save(buf, format="JPEG", quality=get("agent", "jpeg_quality"))
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             parts.append({
                 "type": "image_url",
@@ -234,7 +236,7 @@ class AgentSession:
                 })
 
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=85)
+            img.save(buf, format="JPEG", quality=get("agent", "jpeg_quality"))
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             parts.append({
                 "type": "image_url",
@@ -269,7 +271,7 @@ class AgentSession:
         final_answer = None
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=get("agent", "client_timeout_seconds")) as client:
                 while steps_taken < MAX_AGENT_STEPS:
                     # Call LLM with tools
                     try:
@@ -387,7 +389,7 @@ class AgentSession:
 
                     image_parts = self._build_image_content_parts_with_metadata(images)
 
-                    async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with httpx.AsyncClient(timeout=get("agent", "answer_timeout_seconds")) as client:
                         resp = await client.post(
                             f"{fb_base_url}/chat/completions",
                             headers=fb_headers,

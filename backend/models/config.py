@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Dict
 
+from backend.config import get
+
 
 @dataclass
 class ModelConfig:
@@ -15,27 +17,24 @@ class ModelConfig:
     requires_flash_attention: bool = False
 
 
-# Model registry with predefined configurations
-MODELS: Dict[str, ModelConfig] = {
-    "colpali": ModelConfig(
-        id="colpali",
-        name="ColPali",
-        hf_model_id="vidore/colpali-v1.2",
-        embedding_dim=128,
-        max_visual_tokens=1024,
-        description="Original ColPali model, good general performance",
-        requires_flash_attention=False,
-    ),
-    "colqwen3": ModelConfig(
-        id="colqwen3",
-        name="ColQwen2.5",
-        hf_model_id="tsystems/colqwen2.5-3b-multilingual-v1.0",
-        embedding_dim=128,
-        max_visual_tokens=768,
-        description="Better multilingual support, improved chart/table understanding",
-        requires_flash_attention=False,
-    ),
-}
+def _load_models_from_config() -> Dict[str, ModelConfig]:
+    """Load model registry from ki55.toml [colpali.models.*] sections."""
+    models = {}
+    models_config = get("colpali", "models")
+    for model_key, model_data in models_config.items():
+        models[model_key] = ModelConfig(
+            id=model_data["id"],
+            name=model_data["name"],
+            hf_model_id=model_data["hf_model_id"],
+            embedding_dim=model_data["embedding_dim"],
+            max_visual_tokens=model_data["max_visual_tokens"],
+            description=model_data["description"],
+            requires_flash_attention=model_data.get("requires_flash_attention", False),
+        )
+    return models
+
+
+MODELS: Dict[str, ModelConfig] = _load_models_from_config()
 
 
 def get_model_config(model_id: str) -> ModelConfig:
