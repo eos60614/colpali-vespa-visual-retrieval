@@ -219,6 +219,7 @@ def ingest_pdf(
     use_vlm_detection: bool = False,
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
+    s3_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -241,6 +242,7 @@ def ingest_pdf(
         use_vlm_detection: Use VLM for semantic region labeling (via OpenRouter/OpenAI/Ollama)
         vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
         detection_method: Region detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        s3_key: Optional S3 object key for the source PDF (enables presigned download URLs)
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -332,6 +334,7 @@ def ingest_pdf(
                         "fields": {
                             "id": doc_id,
                             "url": filename,
+                            "s3_key": s3_key or "",
                             "title": title,
                             "page_number": page_num + 1,
                             "text": page_text if is_full_page else "",
@@ -377,6 +380,7 @@ def ingest_pdf(
                     "fields": {
                         "id": page_doc_id,
                         "url": filename,
+                        "s3_key": s3_key or "",
                         "title": title,
                         "page_number": page_num + 1,
                         "text": page_text,

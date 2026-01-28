@@ -669,7 +669,11 @@ def SearchResult(
                             A(
                                 Lucide(icon="external-link", size="18"),
                                 f"PDF Source (Page {fields['page_number'] + 1})",
-                                href=f"{fields['url']}#page={fields['page_number'] + 1}",
+                                href=(
+                                    f"/pdf/download?doc_id={doc_id}#page={fields['page_number'] + 1}"
+                                    if fields.get("s3_key")
+                                    else f"{fields['url']}#page={fields['page_number'] + 1}"
+                                ),
                                 target="_blank",
                                 cls="flex items-center gap-1.5 font-mono bold text-sm",
                             ),

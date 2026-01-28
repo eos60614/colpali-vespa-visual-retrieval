@@ -166,6 +166,7 @@ class PDFProcessor:
                 description=description,
                 tags=tags,
                 batch_size=self._batch_size,
+                s3_key=file.s3_key,
             )
 
             if success:

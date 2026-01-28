@@ -7,6 +7,9 @@ schema pdf_page {
         field url type string {
             indexing: summary | index
         }
+        field s3_key type string {
+            indexing: summary | attribute
+        }
         field year type int {
             indexing: summary | attribute
         }
