@@ -71,7 +71,11 @@ Browser → HTMX requests → FastHTML (main.py)
 
 ### Key Modules
 
-**`main.py`** — FastHTML app entry point. All routes defined here. Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `_resolve_llm_config()` for LLM provider selection and `message_generator()` for SSE chat streaming via httpx.
+**`main.py`** — FastHTML app entry point. All routes defined here. Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `message_generator()` for SSE chat streaming via httpx.
+
+**`backend/config.py`** — Centralized configuration loader. Reads non-sensitive config from `ki55.toml` at import time. Provides `get(*keys)` for nested TOML traversal (e.g., `get("llm", "chat_model")`), `require_env()` for mandatory env vars, and `get_env()` for optional ones. All config access across the codebase goes through this module.
+
+**`backend/llm_config.py`** — LLM provider configuration. `resolve_llm_config()` returns `(base_url, api_key)` — `LLM_BASE_URL` is required (no fallback). Also provides `get_chat_model()`, `is_remote_api()`, and `build_auth_headers()`. Used by `main.py`, `backend/agent.py`, and `backend/drawing_regions.py`.
 
 **`backend/vespa_app.py`** — `VespaQueryClient` class. Three connection modes (local, mTLS, token). Query dispatching for bm25, colpali, and hybrid ranking. Handles tensor format conversions between Python/NumPy and Vespa's block format. Key methods: `get_result_from_query()`, `query_vespa_colpali()`, `query_vespa_bm25()`, `get_sim_maps_from_query()`.
 
@@ -83,9 +87,9 @@ Browser → HTMX requests → FastHTML (main.py)
 
 **`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
-**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events. **Note:** imports from `backend.llm_config` which does not yet exist — this module needs to be created to extract LLM config functions from main.py.
+**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events.
 
-**`backend/models/config.py`** — Model registry. Two models defined: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
+**`backend/models/config.py`** — Model registry. Loads model definitions from `ki55.toml` `[colpali.models.*]` sections. Two models: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
 
 **`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
@@ -107,18 +111,18 @@ Ranking phases:
 
 Ranking profiles in `vespa-app/schemas/pdf_page.sd`: `unranked`, `bm25`, `colpali`, `hybrid`, and `*_sim` variants (same logic + similarity map tensors).
 
+### Configuration Architecture
+
+Non-sensitive config lives in **`ki55.toml`** (required at startup). All sections: `[app]`, `[llm]`, `[vespa]`, `[colpali]`, `[search]`, `[image]`, `[agent]`, `[drawing_regions]`, `[ingestion]`, `[autocomplete]`. Sensitive values (API keys, database URLs) stay in `.env`. Access both via `backend/config.py`.
+
 ### LLM Provider Configuration
 
-All LLM/AI calls go through a single OpenAI-compatible API abstraction (`_resolve_llm_config()` in main.py):
+All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve_llm_config()` in `backend/llm_config.py`):
 
-| Priority | Provider | Base URL | API Key Env Var |
-|----------|----------|----------|-----------------|
-| 1 | Explicit | `LLM_BASE_URL` | `OPENROUTER_API_KEY` or `OPENAI_API_KEY` |
-| 2 | OpenAI direct | `https://api.openai.com/v1` | `OPENAI_API_KEY` (when no OPENROUTER key) |
-| 3 | OpenRouter (default) | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| 4 | Local Ollama | `LLM_BASE_URL=http://localhost:11434/v1` | none |
-
-Chat model set via `CHAT_MODEL` env var (default: `google/gemini-2.5-flash`).
+- **`LLM_BASE_URL`** — Required in `.env`. No fallback URLs. Set to `https://openrouter.ai/api/v1`, `https://api.openai.com/v1`, `http://localhost:11434/v1` (Ollama), etc.
+- **API key** — `OPENROUTER_API_KEY` or `OPENAI_API_KEY` from `.env` (optional for local providers).
+- **Chat model** — Set via `llm.chat_model` in `ki55.toml` (default: `google/gemini-2.5-flash`).
+- **VLM model** — Set via `llm.vlm_model` in `ki55.toml` (used for drawing region classification).
 
 ### Vespa Schemas
 
@@ -130,7 +134,7 @@ Chat model set via `CHAT_MODEL` env var (default: `google/gemini-2.5-flash`).
 
 - Async for I/O-bound work (Vespa queries, HTTP, asyncpg). Sync for CPU-bound work (model inference via `ThreadPoolExecutor`).
 - Dependencies pinned via `uv pip compile` → `requirements.txt`. Local dev deps in `requirements-local.txt`.
-- Logging via stdlib `logging` (not loguru). Environment config via `python-dotenv`.
+- Logging via stdlib `logging` (not loguru). Non-sensitive config in `ki55.toml` via `backend/config.py`; secrets in `.env` via `python-dotenv`.
 - No ORM — raw asyncpg with parameterized queries for Procore DB.
 - Vespa documents fed via pyvespa client library.
 - Git LFS for large binaries (model weights, `tailwindcss` binary, demo images) — see `.gitattributes`.
@@ -148,11 +152,10 @@ Chat model set via `CHAT_MODEL` env var (default: `google/gemini-2.5-flash`).
 
 ## Environment Variables
 
-Copy `.env.example` to `.env`. Key groups:
+Copy `.env.example` to `.env`. Only sensitive/secret values go here; everything else is in `ki55.toml`.
 
+- **Required:** `LLM_BASE_URL` (OpenAI-compatible endpoint), plus `OPENROUTER_API_KEY` or `OPENAI_API_KEY` (for remote providers)
 - **Vespa:** `VESPA_LOCAL_URL` (default `http://localhost:8080`), or cloud auth via `VESPA_CLOUD_SECRET_TOKEN` / mTLS certs
-- **LLM:** `LLM_BASE_URL`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, `CHAT_MODEL`
-- **App:** `LOG_LEVEL`, `HOT_RELOAD`
 - **Procore DB (optional):** `PROCORE_DATABASE_URL`
 - **AWS S3 (optional):** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET`
 
