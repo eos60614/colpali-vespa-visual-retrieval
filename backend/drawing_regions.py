@@ -5,20 +5,23 @@ Large drawings (e.g., 40"x32") compress poorly into ColPali's fixed patch grid (
 losing fine detail. This module detects meaningful sub-regions (elevations, details, tables,
 schedules) and produces crops that each get full patch coverage when embedded separately.
 
-Two detection strategies:
-1. Heuristic: Uses image analysis to find content boundaries via whitespace/border detection
-2. VLM-assisted: Uses a vision-language model to identify and label semantic regions
+Detection hierarchy (auto mode tries in order, uses first that finds 2+ regions):
+1. PDF Vector Analysis (PyMuPDF) — extracts structure from vector PDF paths/text
+2. Whitespace Heuristic — lightweight gutter detection
+3. Content-Aware Tiling — density-based tile placement (always succeeds)
+
+Optional overlay: VLM-as-Classifier — labels pre-detected regions semantically
 """
 
 import io
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,13 @@ TILE_OVERLAP = 100
 # Maximum regions to extract from a single page
 MAX_REGIONS = 12
 
+# PDF vector detection parameters
+BORDER_SPAN_PCT = 0.85          # rectangle spanning >85% of page = border
+ELEMENT_PROXIMITY_PX = 100     # merge elements within 100px gap
+TABLE_MIN_LINES = 3            # minimum h/v lines to detect a table
+TABLE_SPACING_VARIANCE = 0.3   # max std/mean for line spacing regularity
+MIN_VECTOR_PATHS = 10          # minimum vector paths to consider PDF as vector
+
 
 @dataclass
 class DetectedRegion:
@@ -49,6 +59,7 @@ class DetectedRegion:
     label: str = ""  # Semantic label (e.g., "floor plan", "detail section A")
     confidence: float = 1.0
     region_type: str = "detected"  # "detected", "tile", "full_page"
+    content_hint: str = ""  # "drawing_view", "table", "notes", "detail", "content_tile"
 
     @property
     def area(self) -> int:
@@ -68,6 +79,7 @@ class DetectedRegion:
             "label": self.label,
             "confidence": self.confidence,
             "region_type": self.region_type,
+            "content_hint": self.content_hint,
         }
 
 
@@ -86,6 +98,510 @@ def should_detect_regions(image: Image.Image, force: bool = False) -> bool:
         return True
     w, h = image.size
     return (w * h) > LARGE_PAGE_THRESHOLD
+
+
+def _is_vector_pdf(page) -> bool:
+    """Check if a fitz.Page has enough vector data to be analyzed structurally."""
+    drawings = page.get_drawings()
+    if len(drawings) < MIN_VECTOR_PATHS:
+        return False
+    # Also check for a single large raster image covering the page
+    images = page.get_images(full=True)
+    if len(images) == 1 and len(drawings) < MIN_VECTOR_PATHS * 2:
+        # Likely a scanned page with minimal vector overlay
+        return False
+    return True
+
+
+def _rect_spans_page(rect_bbox, page_width, page_height, threshold=BORDER_SPAN_PCT):
+    """Check if a rectangle spans most of the page (likely a border frame)."""
+    x0, y0, x1, y1 = rect_bbox
+    rect_w = x1 - x0
+    rect_h = y1 - y0
+    return (rect_w / page_width > threshold) and (rect_h / page_height > threshold)
+
+
+def _find_border_rects(drawings, page_width, page_height):
+    """Find rectangles that span >85% of the page (border/frame elements)."""
+    border_rects = []
+    for d in drawings:
+        items = d.get("items", [])
+        # Check if this drawing is a rectangle (4 line segments forming a closed shape)
+        if len(items) < 3:
+            continue
+        # Get the bounding rect of this drawing
+        rect = d.get("rect")
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = rect
+        if _rect_spans_page((x0, y0, x1, y1), page_width, page_height):
+            border_rects.append((x0, y0, x1, y1))
+    return border_rects
+
+
+def _detect_tables_from_lines(drawings, page_width, page_height, dpi_scale):
+    """
+    Detect table regions from clusters of regularly-spaced horizontal and vertical lines.
+
+    Returns list of DetectedRegion for detected tables.
+    """
+    h_lines = []  # (y, x_start, x_end)
+    v_lines = []  # (x, y_start, y_end)
+
+    for d in drawings:
+        items = d.get("items", [])
+        for item in items:
+            if item[0] == "l":  # line segment
+                p1, p2 = item[1], item[2]
+                x1, y1 = p1.x, p1.y
+                x2, y2 = p2.x, p2.y
+                # Horizontal line (y values close)
+                if abs(y2 - y1) < 2 and abs(x2 - x1) > 20:
+                    h_lines.append((min(y1, y2), min(x1, x2), max(x1, x2)))
+                # Vertical line (x values close)
+                elif abs(x2 - x1) < 2 and abs(y2 - y1) > 20:
+                    v_lines.append((min(x1, x2), min(y1, y2), max(y1, y2)))
+
+    if len(h_lines) < TABLE_MIN_LINES or len(v_lines) < TABLE_MIN_LINES:
+        return []
+
+    # Sort lines
+    h_lines.sort(key=lambda ln: ln[0])
+    v_lines.sort(key=lambda ln: ln[0])
+
+    # Find clusters of lines that form tables
+    # Group h_lines by proximity into potential table regions
+    tables = []
+    h_clusters = _cluster_lines_by_position(h_lines, axis=0, gap_threshold=page_height * 0.3)
+
+    for h_cluster in h_clusters:
+        if len(h_cluster) < TABLE_MIN_LINES:
+            continue
+        # Check spacing regularity
+        h_positions = sorted(set(ln[0] for ln in h_cluster))
+        if len(h_positions) < TABLE_MIN_LINES:
+            continue
+        spacings = [h_positions[i + 1] - h_positions[i] for i in range(len(h_positions) - 1)]
+        mean_spacing = np.mean(spacings)
+        if mean_spacing <= 0:
+            continue
+        variance = np.std(spacings) / mean_spacing
+        if variance > TABLE_SPACING_VARIANCE:
+            continue
+
+        # Find the bounding box of this h_cluster
+        h_min = min(ln[0] for ln in h_cluster)
+        h_max = max(ln[0] for ln in h_cluster)
+        x_min = min(ln[1] for ln in h_cluster)
+        x_max = max(ln[2] for ln in h_cluster)
+
+        # Check if there are vertical lines overlapping this region
+        matching_v = [v for v in v_lines
+                      if v[1] <= h_max and v[2] >= h_min
+                      and v[0] >= x_min - 10 and v[0] <= x_max + 10]
+        if len(matching_v) < TABLE_MIN_LINES:
+            continue
+
+        # Convert to pixel coordinates
+        px_x = int(x_min * dpi_scale)
+        px_y = int(h_min * dpi_scale)
+        px_w = int((x_max - x_min) * dpi_scale)
+        px_h = int((h_max - h_min) * dpi_scale)
+
+        if px_w > MIN_REGION_SIZE and px_h > MIN_REGION_SIZE:
+            tables.append(DetectedRegion(
+                x=px_x, y=px_y, width=px_w, height=px_h,
+                label="table", region_type="detected",
+                content_hint="table", confidence=0.9,
+            ))
+
+    return tables
+
+
+def _cluster_lines_by_position(lines, axis, gap_threshold):
+    """Cluster lines by their position on the given axis, grouping nearby lines."""
+    if not lines:
+        return []
+    sorted_lines = sorted(lines, key=lambda ln: ln[axis])
+    clusters = [[sorted_lines[0]]]
+    for line in sorted_lines[1:]:
+        if line[axis] - clusters[-1][-1][axis] < gap_threshold:
+            clusters[-1].append(line)
+        else:
+            clusters.append([line])
+    return clusters
+
+
+def _cluster_elements_spatially(bboxes, gap_threshold=ELEMENT_PROXIMITY_PX):
+    """
+    Cluster bounding boxes by spatial proximity.
+
+    Iteratively merges bboxes that overlap or are within gap_threshold pixels.
+    Each bbox is (x0, y0, x1, y1).
+
+    Returns list of merged bounding boxes.
+    """
+    if not bboxes:
+        return []
+
+    # Start each bbox as its own cluster
+    clusters = [list(bb) for bb in bboxes]  # mutable copies
+
+    changed = True
+    while changed:
+        changed = False
+        merged = []
+        used = [False] * len(clusters)
+
+        for i in range(len(clusters)):
+            if used[i]:
+                continue
+            cx0, cy0, cx1, cy1 = clusters[i]
+
+            for j in range(i + 1, len(clusters)):
+                if used[j]:
+                    continue
+                ox0, oy0, ox1, oy1 = clusters[j]
+
+                # Check if within gap_threshold (expand one box by gap and check overlap)
+                if (cx0 - gap_threshold <= ox1 and cx1 + gap_threshold >= ox0 and
+                        cy0 - gap_threshold <= oy1 and cy1 + gap_threshold >= oy0):
+                    # Merge
+                    cx0 = min(cx0, ox0)
+                    cy0 = min(cy0, oy0)
+                    cx1 = max(cx1, ox1)
+                    cy1 = max(cy1, oy1)
+                    used[j] = True
+                    changed = True
+
+            merged.append([cx0, cy0, cx1, cy1])
+            used[i] = True
+
+        clusters = merged
+
+    return [tuple(c) for c in clusters]
+
+
+def _classify_cluster(cluster_bbox, drawing_bboxes, text_bboxes):
+    """Classify a cluster by its content density (drawing paths vs text blocks)."""
+    cx0, cy0, cx1, cy1 = cluster_bbox
+    drawing_count = 0
+    text_count = 0
+
+    for dx0, dy0, dx1, dy1 in drawing_bboxes:
+        # Check overlap
+        if dx0 < cx1 and dx1 > cx0 and dy0 < cy1 and dy1 > cy0:
+            drawing_count += 1
+
+    for tx0, ty0, tx1, ty1 in text_bboxes:
+        if tx0 < cx1 and tx1 > cx0 and ty0 < cy1 and ty1 > cy0:
+            text_count += 1
+
+    total = drawing_count + text_count
+    if total == 0:
+        return "detail"
+
+    text_ratio = text_count / total
+    if text_ratio > 0.7:
+        return "notes"
+    elif text_ratio < 0.3:
+        return "drawing_view"
+    else:
+        return "detail"
+
+
+def _find_framing_rects(drawings, page_width, page_height, border_rects, min_area_pct=0.02):
+    """
+    Find internal framing rectangles that define content regions.
+
+    On architectural drawings, distinct regions (detail callouts, schedule tables,
+    notes sections, title blocks) are typically enclosed by rectangular outlines.
+    These are smaller than page borders but large enough to be meaningful.
+
+    Args:
+        drawings: List of drawing dicts from page.get_drawings()
+        page_width: Page width in points
+        page_height: Page height in points
+        border_rects: Already-detected border rectangles to exclude
+        min_area_pct: Minimum area as fraction of page area
+
+    Returns:
+        List of (x0, y0, x1, y1) tuples in point coordinates
+    """
+    page_area = page_width * page_height
+    min_area = page_area * min_area_pct
+    framing_rects = []
+
+    for d in drawings:
+        items = d.get("items", [])
+        rect = d.get("rect")
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = rect
+        w = x1 - x0
+        h = y1 - y0
+
+        # Skip if too small
+        if w * h < min_area:
+            continue
+
+        # Skip if it's a page border
+        is_border = False
+        for bx0, by0, bx1, by1 in border_rects:
+            if (abs(x0 - bx0) < 5 and abs(y0 - by0) < 5 and
+                    abs(x1 - bx1) < 5 and abs(y1 - by1) < 5):
+                is_border = True
+                break
+        if is_border:
+            continue
+        if _rect_spans_page((x0, y0, x1, y1), page_width, page_height):
+            continue
+
+        # Check if this is a rectangular path (closed shape with ~4 segments)
+        # Rectangular drawings have items that trace a closed box
+        is_rect_shape = False
+        if len(items) >= 3:
+            # Check if items form a rectangle: all line segments, bounding box
+            # matches the rect closely
+            line_count = sum(1 for it in items if it[0] == "l")
+            if line_count >= 3:
+                is_rect_shape = True
+        # Also accept single "re" (rectangle) items
+        for it in items:
+            if it[0] == "re":
+                is_rect_shape = True
+                break
+
+        if is_rect_shape:
+            # Deduplicate: don't add if we already have a very similar rect
+            is_dup = False
+            for fx0, fy0, fx1, fy1 in framing_rects:
+                if (abs(x0 - fx0) < 10 and abs(y0 - fy0) < 10 and
+                        abs(x1 - fx1) < 10 and abs(y1 - fy1) < 10):
+                    is_dup = True
+                    break
+            if not is_dup:
+                framing_rects.append((x0, y0, x1, y1))
+
+    # Sort by area descending
+    framing_rects.sort(key=lambda r: (r[2] - r[0]) * (r[3] - r[1]), reverse=True)
+    return framing_rects
+
+
+def _remove_contained_rects(rects):
+    """Remove rectangles that are fully contained within larger ones."""
+    if len(rects) <= 1:
+        return rects
+    result = []
+    for i, (x0, y0, x1, y1) in enumerate(rects):
+        contained = False
+        for j, (ox0, oy0, ox1, oy1) in enumerate(rects):
+            if i == j:
+                continue
+            # Check if rect i is fully inside rect j (with tolerance)
+            if (x0 >= ox0 - 5 and y0 >= oy0 - 5 and
+                    x1 <= ox1 + 5 and y1 <= oy1 + 5):
+                # Only remove if the outer rect is strictly larger
+                outer_area = (ox1 - ox0) * (oy1 - oy0)
+                inner_area = (x1 - x0) * (y1 - y0)
+                if inner_area < outer_area * 0.95:
+                    contained = True
+                    break
+        if not contained:
+            result.append((x0, y0, x1, y1))
+    return result
+
+
+def detect_regions_pdf_vector(
+    page,
+    page_width_px: int,
+    page_height_px: int,
+    min_region_size: int = MIN_REGION_SIZE,
+    min_region_area: int = MIN_REGION_AREA,
+    max_regions: int = MAX_REGIONS,
+) -> List[DetectedRegion]:
+    """
+    Detect content regions by analyzing vector paths and text blocks in a PDF page.
+
+    Uses PyMuPDF's page.get_drawings() and page.get_text("dict") to extract
+    structural information directly from vector PDFs (e.g., CAD exports).
+
+    Detection strategy:
+    1. Find and remove page border frames
+    2. Find internal framing rectangles (detail boxes, schedule outlines, etc.)
+       → these directly define regions
+    3. Detect table grids from regular line patterns
+    4. Cluster remaining elements by spatial proximity
+    5. Classify each region by content density
+
+    Args:
+        page: fitz.Page object
+        page_width_px: Rendered pixel width (for coordinate mapping)
+        page_height_px: Rendered pixel height
+        min_region_size: Minimum width or height for a region
+        min_region_area: Minimum pixel area for a region
+        max_regions: Maximum number of regions to return
+
+    Returns:
+        List of DetectedRegion objects. Empty list if page is not vector-based.
+    """
+    if not _is_vector_pdf(page):
+        return []
+
+    page_rect = page.rect
+    page_w_pts = page_rect.width
+    page_h_pts = page_rect.height
+
+    if page_w_pts <= 0 or page_h_pts <= 0:
+        return []
+
+    # DPI scale: PyMuPDF uses points (72 DPI), rendered at 150 DPI
+    dpi_scale = page_width_px / page_w_pts
+
+    # Step 1: Get all vector drawings
+    drawings = page.get_drawings()
+
+    # Step 2: Find and exclude border frames
+    border_rects = _find_border_rects(drawings, page_w_pts, page_h_pts)
+
+    # Step 3: Find internal framing rectangles that define regions
+    framing_rects = _find_framing_rects(
+        drawings, page_w_pts, page_h_pts, border_rects
+    )
+    framing_rects = _remove_contained_rects(framing_rects)
+
+    # Step 4: Collect all drawing bounding boxes (excluding borders)
+    drawing_bboxes = []  # in point coordinates
+    for d in drawings:
+        rect = d.get("rect")
+        if rect is None:
+            continue
+        x0, y0, x1, y1 = rect
+        # Skip border rectangles
+        is_border = False
+        for bx0, by0, bx1, by1 in border_rects:
+            if (abs(x0 - bx0) < 5 and abs(y0 - by0) < 5 and
+                    abs(x1 - bx1) < 5 and abs(y1 - by1) < 5):
+                is_border = True
+                break
+        if is_border:
+            continue
+        # Skip tiny paths
+        if (x1 - x0) < 5 and (y1 - y0) < 5:
+            continue
+        drawing_bboxes.append((x0, y0, x1, y1))
+
+    # Step 5: Get text blocks with positions
+    text_bboxes = []
+    try:
+        text_dict = page.get_text("dict")
+        for block in text_dict.get("blocks", []):
+            if block.get("type") == 0:  # text block
+                bbox = block.get("bbox")
+                if bbox:
+                    text_bboxes.append(tuple(bbox))
+    except Exception:
+        pass
+
+    # Step 6: Convert framing rects to regions (these are high-confidence)
+    framed_regions = []
+    framed_areas_pts = []  # track areas to exclude from further clustering
+    for fx0, fy0, fx1, fy1 in framing_rects:
+        px_x = int(fx0 * dpi_scale)
+        px_y = int(fy0 * dpi_scale)
+        px_w = int((fx1 - fx0) * dpi_scale)
+        px_h = int((fy1 - fy0) * dpi_scale)
+
+        if px_w < min_region_size or px_h < min_region_size:
+            continue
+        if px_w * px_h < min_region_area:
+            continue
+
+        # Clamp to image bounds
+        px_x = max(0, min(px_x, page_width_px))
+        px_y = max(0, min(px_y, page_height_px))
+        px_w = min(px_w, page_width_px - px_x)
+        px_h = min(px_h, page_height_px - px_y)
+
+        content_hint = _classify_cluster(
+            (fx0, fy0, fx1, fy1), drawing_bboxes, text_bboxes
+        )
+
+        framed_regions.append(DetectedRegion(
+            x=px_x, y=px_y, width=px_w, height=px_h,
+            region_type="detected", content_hint=content_hint,
+            confidence=0.9,
+        ))
+        framed_areas_pts.append((fx0, fy0, fx1, fy1))
+
+    # Step 7: Detect tables
+    table_regions = _detect_tables_from_lines(drawings, page_w_pts, page_h_pts, dpi_scale)
+
+    # Build set of already-claimed areas (framed + table) for exclusion
+    claimed_areas_pts = list(framed_areas_pts)
+    for tr in table_regions:
+        t_x0 = tr.x / dpi_scale
+        t_y0 = tr.y / dpi_scale
+        t_x1 = (tr.x + tr.width) / dpi_scale
+        t_y1 = (tr.y + tr.height) / dpi_scale
+        claimed_areas_pts.append((t_x0, t_y0, t_x1, t_y1))
+
+    # Step 8: Cluster remaining elements not inside framed/table areas
+    unclaimed_bboxes = []
+    for bbox in drawing_bboxes + text_bboxes:
+        bx0, by0, bx1, by1 = bbox
+        in_claimed = False
+        for cx0, cy0, cx1, cy1 in claimed_areas_pts:
+            if bx0 >= cx0 - 5 and by0 >= cy0 - 5 and bx1 <= cx1 + 5 and by1 <= cy1 + 5:
+                in_claimed = True
+                break
+        if not in_claimed:
+            unclaimed_bboxes.append(bbox)
+
+    # Cluster using proximity threshold (in points, convert from pixels)
+    proximity_pts = ELEMENT_PROXIMITY_PX / dpi_scale
+    clusters = _cluster_elements_spatially(unclaimed_bboxes, gap_threshold=proximity_pts)
+
+    # Step 9: Convert clusters to regions and classify
+    cluster_regions = []
+    for cx0, cy0, cx1, cy1 in clusters:
+        px_x = int(cx0 * dpi_scale)
+        px_y = int(cy0 * dpi_scale)
+        px_w = int((cx1 - cx0) * dpi_scale)
+        px_h = int((cy1 - cy0) * dpi_scale)
+
+        if px_w < min_region_size or px_h < min_region_size:
+            continue
+        if px_w * px_h < min_region_area:
+            continue
+
+        # Clamp to image bounds
+        px_x = max(0, min(px_x, page_width_px))
+        px_y = max(0, min(px_y, page_height_px))
+        px_w = min(px_w, page_width_px - px_x)
+        px_h = min(px_h, page_height_px - px_y)
+
+        content_hint = _classify_cluster(
+            (cx0, cy0, cx1, cy1), drawing_bboxes, text_bboxes
+        )
+
+        cluster_regions.append(DetectedRegion(
+            x=px_x, y=px_y, width=px_w, height=px_h,
+            region_type="detected", content_hint=content_hint,
+            confidence=0.85,
+        ))
+
+    # Combine all region types
+    all_regions = framed_regions + table_regions + cluster_regions
+    all_regions.sort(key=lambda r: r.area, reverse=True)
+
+    logger.info(
+        f"PDF vector analysis detected {len(all_regions)} regions "
+        f"({len(framed_regions)} framed, {len(table_regions)} tables, "
+        f"{len(cluster_regions)} clusters) from {len(drawings)} vector paths"
+    )
+
+    return all_regions[:max_regions]
 
 
 def detect_regions_heuristic(
@@ -268,7 +784,262 @@ def _generate_tiles(
     return tiles
 
 
-def detect_regions_vlm(
+def detect_regions_content_aware_tiling(
+    image: Image.Image,
+    min_region_size: int = MIN_REGION_SIZE,
+    min_region_area: int = MIN_REGION_AREA,
+    max_regions: int = MAX_REGIONS,
+) -> List[DetectedRegion]:
+    """
+    Generate tiles whose boundaries respect content density.
+
+    Instead of a blind grid, computes a coarse density heatmap and shifts
+    tile boundaries toward local density minima to avoid splitting content.
+
+    Args:
+        image: PIL Image (full drawing page)
+        min_region_size: Minimum dimension for a region
+        min_region_area: Minimum pixel area for a region
+        max_regions: Maximum number of regions to return
+
+    Returns:
+        List of DetectedRegion objects with region_type="content_tile"
+    """
+    w, h = image.size
+    gray = np.array(image.convert("L"))
+
+    # Content mask (pixels below 240 are content)
+    content_mask = (gray < 240).astype(np.float32)
+
+    # Compute coarse density on a 50x50 grid
+    grid_size = 50
+    rows_per_cell = max(1, h // grid_size)
+    cols_per_cell = max(1, w // grid_size)
+
+    # Row and column density profiles
+    row_density = content_mask.mean(axis=1)
+    col_density = content_mask.mean(axis=0)
+
+    # Target tile size
+    target_tile = 1800
+    overlap = TILE_OVERLAP
+
+    # Calculate how many tiles we need
+    n_cols = max(1, int(np.ceil((w - overlap) / (target_tile - overlap))))
+    n_rows = max(1, int(np.ceil((h - overlap) / (target_tile - overlap))))
+
+    # Find optimal split points at density minima
+    h_splits = _find_density_minima_splits(row_density, n_rows, window=rows_per_cell)
+    v_splits = _find_density_minima_splits(col_density, n_cols, window=cols_per_cell)
+
+    h_boundaries = [0] + h_splits + [h]
+    v_boundaries = [0] + v_splits + [w]
+
+    tiles = []
+    for i in range(len(h_boundaries) - 1):
+        for j in range(len(v_boundaries) - 1):
+            y1 = h_boundaries[i]
+            y2 = h_boundaries[i + 1]
+            x1 = v_boundaries[j]
+            x2 = v_boundaries[j + 1]
+
+            rw = x2 - x1
+            rh = y2 - y1
+
+            if rw < min_region_size or rh < min_region_size:
+                continue
+            if rw * rh < min_region_area:
+                continue
+
+            tiles.append(DetectedRegion(
+                x=x1, y=y1, width=rw, height=rh,
+                region_type="content_tile",
+                content_hint="content_tile",
+                label=f"tile_r{i}_c{j}",
+            ))
+
+    # If content-aware didn't produce enough tiles, fall back to blind grid
+    if len(tiles) < 2:
+        tiles = _generate_tiles(w, h, min_region_size, min_region_area)
+
+    tiles.sort(key=lambda r: r.area, reverse=True)
+    return tiles[:max_regions]
+
+
+def _find_density_minima_splits(density, n_splits, window=50):
+    """
+    Find split points at local density minima.
+
+    Divides the density array into n_splits+1 roughly equal segments,
+    then within a window around each ideal split point, picks the position
+    with the lowest average density.
+    """
+    if n_splits <= 0:
+        return []
+
+    length = len(density)
+    splits = []
+
+    for i in range(1, n_splits + 1):
+        # Ideal split position
+        ideal = int(length * i / (n_splits + 1))
+        # Search window
+        start = max(0, ideal - window)
+        end = min(length, ideal + window)
+
+        if start >= end:
+            splits.append(ideal)
+            continue
+
+        # Find the position with minimum average density in a small neighborhood
+        best_pos = ideal
+        best_score = float("inf")
+        neighborhood = max(1, window // 5)
+
+        for pos in range(start, end):
+            region_start = max(0, pos - neighborhood)
+            region_end = min(length, pos + neighborhood)
+            score = density[region_start:region_end].mean()
+            if score < best_score:
+                best_score = score
+                best_pos = pos
+
+        splits.append(best_pos)
+
+    return sorted(splits)
+
+
+def classify_regions_vlm(
+    image: Image.Image,
+    regions: List[DetectedRegion],
+    api_key: Optional[str] = None,
+    model: str = "anthropic/claude-sonnet-4",
+    base_url: Optional[str] = None,
+) -> List[DetectedRegion]:
+    """
+    Use a VLM to label pre-detected regions (classifier, not detector).
+
+    Draws numbered colored rectangles on a copy of the image and asks the VLM
+    to provide descriptive labels for each numbered region.
+
+    Args:
+        image: Full drawing page as PIL Image
+        regions: Pre-detected regions to label
+        api_key: API key for VLM
+        model: Model identifier
+        base_url: API base URL
+
+    Returns:
+        Regions with updated labels
+    """
+    if not regions:
+        return regions
+
+    try:
+        import httpx
+    except ImportError:
+        logger.warning("httpx not installed, skipping VLM classification")
+        return regions
+
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY")
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        api_key = openrouter_key or openai_key or ""
+    if not base_url:
+        explicit_base = os.environ.get("LLM_BASE_URL")
+        if explicit_base:
+            base_url = explicit_base
+        elif openai_key and not openrouter_key:
+            base_url = "https://api.openai.com/v1"
+        else:
+            base_url = "https://openrouter.ai/api/v1"
+
+    is_remote = "openrouter.ai" in base_url or "openai.com" in base_url
+    if is_remote and not api_key:
+        logger.warning("No API key for VLM classification, returning unlabeled regions")
+        return regions
+
+    from PIL import ImageDraw
+
+    # Draw numbered rectangles on a copy of the image
+    annotated = image.copy()
+    draw = ImageDraw.Draw(annotated)
+    colors = ["red", "blue", "green", "orange", "purple", "cyan", "magenta", "yellow"]
+
+    for i, region in enumerate(regions):
+        color = colors[i % len(colors)]
+        bbox = region.bbox
+        draw.rectangle(bbox, outline=color, width=4)
+        draw.text((bbox[0] + 5, bbox[1] + 5), str(i + 1), fill=color)
+
+    # Downscale for API
+    w, h = annotated.size
+    max_api_dim = 1500
+    scale = min(max_api_dim / w, max_api_dim / h, 1.0)
+    if scale < 1.0:
+        annotated = annotated.resize(
+            (int(w * scale), int(h * scale)), Image.Resampling.LANCZOS
+        )
+
+    buffer = io.BytesIO()
+    annotated.save(buffer, format="JPEG", quality=80)
+    import base64
+    image_b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+    prompt = f"""This architectural/construction drawing has {len(regions)} numbered regions outlined in colored rectangles.
+
+For each numbered region (1 through {len(regions)}), provide a short descriptive label.
+
+Respond with ONLY a JSON object mapping region numbers to labels:
+{{"1": "floor plan", "2": "door schedule", "3": "general notes", ...}}"""
+
+    try:
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json={
+                "model": model,
+                "max_tokens": 1000,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+            },
+            timeout=60.0,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+        response_text = result["choices"][0]["message"]["content"].strip()
+        if response_text.startswith("```"):
+            response_text = response_text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+        labels = json.loads(response_text)
+
+        for i, region in enumerate(regions):
+            label = labels.get(str(i + 1), "")
+            if label:
+                region.label = label
+
+        logger.info(f"VLM classified {len(labels)} region labels")
+
+    except Exception as e:
+        logger.warning(f"VLM classification failed: {e}, returning unlabeled regions")
+
+    return regions
+
+
+def detect_regions_vlm_legacy(
     image: Image.Image,
     api_key: Optional[str] = None,
     model: str = "anthropic/claude-sonnet-4",
@@ -457,6 +1228,8 @@ def detect_and_extract_regions(
     min_region_size: int = MIN_REGION_SIZE,
     min_region_area: int = MIN_REGION_AREA,
     max_regions: int = MAX_REGIONS,
+    detection_method: str = "auto",
+    pdf_page=None,
 ) -> List[Tuple[Image.Image, DetectedRegion]]:
     """
     Main entry point: detect regions in a drawing and extract cropped images.
@@ -464,14 +1237,22 @@ def detect_and_extract_regions(
     If the image is small enough that ColPali can handle it well natively,
     returns a single region covering the full page (unless force=True).
 
+    Detection methods:
+        "auto" — tries pdf_vector (if pdf_page given) → heuristic → content-aware tiling
+        "pdf_vector" — PDF vector analysis only (requires pdf_page)
+        "heuristic" — whitespace gutter detection only
+        "vlm_legacy" — VLM-based bounding box detection (original behavior)
+
     Args:
         image: Full drawing page as PIL Image
-        use_vlm: Whether to use VLM for semantic region detection
+        use_vlm: Whether to use VLM to label detected regions (classifier overlay)
         vlm_api_key: API key for VLM (defaults to env var)
         force: Force region detection even on small images
         min_region_size: Minimum dimension for a region
         min_region_area: Minimum pixel area for a region
         max_regions: Maximum number of regions
+        detection_method: Detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        pdf_page: fitz.Page object for PDF vector analysis
 
     Returns:
         List of (cropped_image, region_metadata) tuples.
@@ -480,7 +1261,6 @@ def detect_and_extract_regions(
     w, h = image.size
 
     if not should_detect_regions(image, force=force):
-        # Image is small enough for ColPali to handle natively
         full_region = DetectedRegion(
             x=0, y=0, width=w, height=h,
             label="full_page", region_type="full_page",
@@ -489,18 +1269,51 @@ def detect_and_extract_regions(
 
     logger.info(f"Image {w}x{h} qualifies for region detection (area={w*h:,} > threshold={LARGE_PAGE_THRESHOLD:,})")
 
-    # Detect regions
-    if use_vlm:
-        regions = detect_regions_vlm(image, api_key=vlm_api_key)
-        logger.info(f"VLM detected {len(regions)} regions")
+    det_kwargs = dict(
+        min_region_size=min_region_size,
+        min_region_area=min_region_area,
+        max_regions=max_regions,
+    )
+
+    regions = []
+
+    if detection_method == "auto":
+        # 1. Try PDF vector analysis if page provided
+        if pdf_page is not None:
+            regions = detect_regions_pdf_vector(
+                pdf_page, w, h, **det_kwargs
+            )
+            if len(regions) >= 2:
+                logger.info(f"PDF vector analysis found {len(regions)} regions")
+
+        # 2. Try whitespace heuristic
+        if len(regions) < 2:
+            regions = detect_regions_heuristic(image, **det_kwargs)
+            if len(regions) >= 2:
+                logger.info(f"Heuristic found {len(regions)} regions")
+
+        # 3. Content-aware tiling (always succeeds)
+        if len(regions) < 2:
+            regions = detect_regions_content_aware_tiling(image, **det_kwargs)
+            logger.info(f"Content-aware tiling produced {len(regions)} tiles")
+
+    elif detection_method == "pdf_vector":
+        if pdf_page is None:
+            raise ValueError("pdf_vector detection requires pdf_page argument")
+        regions = detect_regions_pdf_vector(pdf_page, w, h, **det_kwargs)
+
+    elif detection_method == "heuristic":
+        regions = detect_regions_heuristic(image, **det_kwargs)
+
+    elif detection_method == "vlm_legacy":
+        regions = detect_regions_vlm_legacy(image, api_key=vlm_api_key)
+
     else:
-        regions = detect_regions_heuristic(
-            image,
-            min_region_size=min_region_size,
-            min_region_area=min_region_area,
-            max_regions=max_regions,
-        )
-        logger.info(f"Heuristic detected {len(regions)} regions")
+        raise ValueError(f"Unknown detection_method: {detection_method!r}")
+
+    # Optional VLM classifier overlay to label regions
+    if use_vlm and regions and detection_method != "vlm_legacy":
+        regions = classify_regions_vlm(image, regions, api_key=vlm_api_key)
 
     # Extract region images
     extracted = extract_region_images(image, regions)
