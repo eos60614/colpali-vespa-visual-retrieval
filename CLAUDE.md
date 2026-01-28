@@ -87,6 +87,8 @@ Browser → HTMX requests → FastHTML (main.py)
 
 **`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
+**`backend/llm_rerank.py`** — Optional LLM-based semantic reranking. Uses the configured LLM as a cross-encoder to jointly read query and document content and score relevance. Runs after MaxSim reranking when enabled via `llm.llm_rerank_enabled` in `ki55.toml` (default: disabled).
+
 **`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events.
 
 **`backend/models/config.py`** — Model registry. Loads model definitions from `ki55.toml` `[colpali.models.*]` sections. Two models: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
@@ -96,6 +98,8 @@ Browser → HTMX requests → FastHTML (main.py)
 **`frontend/app.py`** — All UI components as PascalCase functions returning FastHTML elements. Key components: `Home`, `Search`, `SearchResult`, `ChatResult`, `UploadPage`, `SimMapButtonPoll`/`SimMapButtonReady`.
 
 **`frontend/layout.py`** — Page layout template, responsive grid JS (1-col mobile, 2-col desktop at 45fr/15fr), scrollbar initialization, theme toggle.
+
+**`web/`** — Separate Next.js/React frontend (TypeScript). Runs on port 3000 (`npm run dev`). Independent from the FastHTML app — shares the same backend APIs but provides an alternative UI.
 
 ### Embedding & Ranking Pipeline
 
@@ -108,6 +112,7 @@ Ranking phases:
 2. **First-phase:** MaxSim with binary embeddings (all candidates)
 3. **Second-phase:** MaxSim with float embeddings (top 10)
 4. **Optional app-level rerank:** Full MaxSim in Python/NumPy (`backend/rerank.py`)
+5. **Optional LLM rerank:** Semantic cross-encoder scoring via LLM (`backend/llm_rerank.py`, disabled by default)
 
 Ranking profiles in `vespa-app/schemas/pdf_page.sd`: `unranked`, `bm25`, `colpali`, `hybrid`, and `*_sim` variants (same logic + similarity map tensors).
 
@@ -141,6 +146,7 @@ All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve
 - Frontend components are PascalCase functions; backend helpers are snake_case.
 - FastHTML routes use `@rt()` decorator for GET/POST, `@app.get()` for explicit GET.
 - Tailwind CSS compiled via `tailwindcss` binary (Git LFS tracked). Config in `tailwind.config.js` references shad4fast components from venv.
+- Ruff uses default config — no `pyproject.toml` or `ruff.toml` customization.
 - No CI/CD pipelines — testing and linting run via slash commands or manually.
 
 ### Testing Conventions
