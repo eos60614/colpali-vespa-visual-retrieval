@@ -1,404 +1,175 @@
-# ColPali-Vespa Visual Retrieval
+# CLAUDE.md
 
-Development guidelines for AI assistants working on this codebase.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
 
-Visual document retrieval system combining ColPali (vision-language model) embeddings with Vespa search. Users upload PDFs or search existing documents using text queries that match against visual page embeddings. An AI chat sidebar (Google Gemini) provides natural language answers grounded in search results.
+Visual document retrieval system combining ColPali (vision-language model) embeddings with Vespa search. Users upload PDFs or search existing documents using text queries matched against visual page embeddings. An AI chat sidebar provides natural language answers grounded in search results. A multi-step agent can iteratively search and reason over documents.
 
-**Tech stack:** Python 3.12, FastHTML, HTMX, ColQwen2.5 (colpali-engine), Vespa 8, PyMuPDF, Google Gemini, Tailwind CSS.
-
-## Project Structure
-
-```
-colpali-vespa-visual-retrieval/
-├── main.py                        # FastHTML app entry point, all routes
-├── icons.py                       # SVG icon definitions
-├── globals.css / output.css       # Tailwind CSS
-├── tailwind.config.js             # Tailwind configuration
-├── docker-compose.yml             # Vespa container setup
-├── requirements.txt               # Pinned deps (uv pip compile output)
-├── requirements-local.txt         # Local dev deps (ruff, pymupdf, reportlab)
-├── .env.example                   # Environment variable template
-├── SETUP_LOCAL.md                 # Local Vespa setup guide with troubleshooting
-├── .gitattributes                 # Git LFS config for large files
-│
-├── backend/
-│   ├── vespa_app.py               # VespaQueryClient: query execution, ranking, connection
-│   ├── colpali.py                 # SimMapGenerator: embeddings, similarity map heatmaps
-│   ├── ingest.py                  # PDF ingestion pipeline (validate, render, embed, feed)
-│   ├── rerank.py                  # Application-level MaxSim reranking
-│   ├── cache.py                   # Simple LRU cache
-│   ├── stopwords.py               # spaCy-based stopword filtering
-│   ├── testquery.py               # Test query utility
-│   ├── models/
-│   │   └── config.py              # ModelConfig dataclass and model registry
-│   └── ingestion/                 # Procore database ingestion subsystem
-│       ├── db_connection.py       # Async PostgreSQL connection pooling (asyncpg)
-│       ├── schema_discovery.py    # Auto-discover DB schema, relationships, file refs
-│       ├── record_ingester.py     # Transform DB records to Vespa documents
-│       ├── file_detector.py       # Detect S3/URL file references in columns
-│       ├── file_downloader.py     # Async S3/URL file downloads
-│       ├── change_detector.py     # Row-level change tracking for incremental sync
-│       ├── sync_manager.py        # Sync orchestration and scheduling
-│       ├── checkpoint.py          # Persist sync state for resumable ingestion (SQLite)
-│       ├── pdf_processor.py       # PDF processing with lazy-loaded ColPali model
-│       └── exceptions.py          # Custom exception hierarchy
-│
-├── frontend/
-│   ├── app.py                     # All UI components (Home, Search, Upload, Chat, etc.)
-│   └── layout.py                  # Layout templates and JS helpers
-│
-├── scripts/
-│   ├── feed_data.py               # Batch PDF indexing (--sample or --pdf-folder)
-│   ├── discover_schema.py         # DB schema discovery CLI
-│   ├── ingest_database.py         # Full/incremental DB ingestion CLI
-│   ├── sync_database.py           # Continuous sync daemon CLI
-│   ├── ingest_colqwen3_embeddings.py  # ColQwen3 embedding generation
-│   ├── reingest_single_file_colqwen3.py # Re-ingest single file
-│   ├── ingest_sample.py           # Sample data generation
-│   ├── test_connections.py        # Validate DB and Vespa connectivity
-│   ├── test_ingestion.py          # Ingestion integration tests
-│   ├── test_e2e_file_ingestion.py # End-to-end file tests
-│   ├── test_real_ingestion.py     # Real database integration tests
-│   ├── setup_local.sh             # Automated Docker + Vespa deployment
-│   └── sync_cron.sh               # Cron wrapper for incremental sync with PDF processing
-│
-├── tests/
-│   ├── conftest.py                # Shared pytest fixtures
-│   ├── unit/ingestion/            # Unit tests
-│   └── integration/ingestion/     # Integration tests
-│
-├── vespa-app/                     # Vespa application package
-│   ├── schemas/
-│   │   ├── pdf_page.sd            # PDF page schema (embeddings, BM25, HNSW)
-│   │   ├── procore_record.sd      # Database record schema
-│   │   └── procore_schema_metadata.sd  # Schema metadata for agent navigation
-│   ├── services.xml               # Vespa services config
-│   ├── hosts.xml                  # Vespa cluster config
-│   └── validation-overrides.xml   # Schema validation overrides
-│
-├── static/
-│   ├── js/                        # Client-side JavaScript (highlightjs-theme.js)
-│   ├── img/                       # Static images (logos, architecture diagrams)
-│   ├── full_images/               # (Generated) cached full-res page images (LFS)
-│   └── sim_maps/                  # (Generated) similarity map overlays
-│
-├── specs/                         # Feature specification documents
-│   ├── 001-colqwen3-model/
-│   ├── 001-procore-db-ingestion/
-│   └── 002-file-upload-ingest/
-│
-├── .claude/                       # Claude IDE slash commands
-│   └── commands/
-│       ├── check.md               # Full code quality check (lint + tests)
-│       ├── debug.md               # Debugging assistance
-│       ├── lint.md                # Run ruff linter
-│       ├── lint-fix.md            # Auto-fix lint issues
-│       ├── server.md              # Start FastHTML dev server
-│       ├── test.md                # Run pytest suite
-│       └── speckit.*.md           # Speckit feature workflow commands
-│
-└── .specify/                      # Speckit specification tooling
-    ├── memory/constitution.md     # Project constitution template
-    ├── scripts/bash/              # Setup and feature automation scripts
-    └── templates/                 # Spec, plan, checklist, tasks templates
-```
+**Tech stack:** Python 3.12, FastHTML, HTMX, ColQwen2.5 (colpali-engine), Vespa 8, PyMuPDF, Tailwind CSS.
 
 ## Commands
 
-### Run the application
-
 ```bash
-python main.py                     # Starts on http://localhost:7860
+# Run the app
+python main.py                                    # http://localhost:7860
+
+# Vespa
+docker-compose up -d                              # Start Vespa container
+vespa deploy vespa-app -t http://localhost:19071   # Deploy schemas
+./scripts/setup_local.sh                          # Or: automated Docker + deploy
+
+# Index data
+python scripts/feed_data.py --sample              # Sample PDFs
+python scripts/feed_data.py --pdf-folder /path    # Custom PDFs
+
+# Testing
+pytest tests/                                     # All tests
+pytest tests/unit/                                # Unit tests only
+pytest tests/integration/                         # Integration tests (require running services)
+pytest -v -x --tb=short tests/                    # Verbose, fail-fast (project convention)
+pytest -k "test_ingest" tests/                    # Run tests matching pattern
+
+# Linting
+ruff check .                                      # Lint
+ruff check --fix .                                # Auto-fix
+ruff format .                                     # Format code
+
+# Database ingestion (Procore PostgreSQL)
+python scripts/ingest_database.py --full          # Full ingestion
+python scripts/ingest_database.py --incremental   # Incremental sync
+python scripts/sync_database.py --daemon          # Continuous sync daemon
 ```
 
-### Vespa
+### Slash Commands
 
-```bash
-docker-compose up -d               # Start Vespa container
-vespa deploy vespa-app -t http://localhost:19071  # Deploy schemas
-```
+Development slash commands are defined in `.claude/commands/`. Key ones:
 
-Or use the automated setup script:
-```bash
-./scripts/setup_local.sh           # Docker + schema deployment in one step
-```
+- **`/check`** — Run full code quality checks (lint + tests), fail-fast, logs to `logs/check.log`
+- **`/lint`** — Run ruff linter with full context, logs to `logs/lint.log`
+- **`/lint-fix`** — Auto-fix linting issues with `ruff check --fix` + `ruff format`, logs to `logs/lint-fix.log`
+- **`/test`** — Run pytest with `-v -x --tb=short`, supports `-k` pattern matching, logs to `logs/test.log`
+- **`/server`** — Start FastHTML dev server in background (port 7860), pre-flight checks for Vespa/port availability, logs to `logs/server.log`
+- **`/debug`** — Search git branches for existing fixes to similar issues
 
-### Index data
+All slash commands detect and activate the virtual environment (`venv/`, `.venv/`, or `env/`), log output to `logs/`, and use the Read tool to check results (preserving context window).
 
-```bash
-python scripts/feed_data.py --sample                    # Index sample PDFs
-python scripts/feed_data.py --pdf-folder /path/to/pdfs  # Index custom PDFs
-python scripts/feed_data.py --pdf-folder /path --workers 20  # Parallel
-```
-
-### Database ingestion
-
-```bash
-# Schema discovery
-python scripts/discover_schema.py --format markdown --output schema-report.md
-python scripts/discover_schema.py --format json --output schema-map.json
-
-# Full ingestion
-python scripts/ingest_database.py --full
-python scripts/ingest_database.py --full --tables photos drawings projects
-python scripts/ingest_database.py --full --exclude _prisma_migrations sync_events
-python scripts/ingest_database.py --full --download-files --file-workers 4
-python scripts/ingest_database.py --full --dry-run
-
-# Incremental sync
-python scripts/ingest_database.py --incremental
-
-# Sync daemon
-python scripts/sync_database.py --daemon
-python scripts/sync_database.py --daemon --interval 300
-python scripts/sync_database.py --once
-python scripts/sync_database.py --status
-
-# Cron-based sync (with PDF processing and file downloads)
-./scripts/sync_cron.sh             # Single run with lock file, logging, and PDF processing
-```
-
-### Testing and linting
-
-```bash
-pytest tests/                      # All tests
-pytest tests/unit/                 # Unit tests only
-pytest tests/integration/          # Integration tests only
-ruff check .                       # Lint
-ruff check --fix .                 # Auto-fix lint issues
-```
-
-### Claude IDE slash commands
-
-These are defined in `.claude/commands/` and can be invoked in Claude Code:
-
-| Command | Purpose |
-|---------|---------|
-| `/check` | Full code quality check (lint + tests), fail-fast |
-| `/test` | Run pytest with verbose output, optional path/filter args |
-| `/lint` | Run ruff linter with full output |
-| `/lint-fix` | Auto-fix lint issues with ruff |
-| `/server` | Start FastHTML dev server (background, with logging) |
-| `/debug` | Debugging assistance |
-| `/speckit.*` | Feature specification workflow (analyze, specify, plan, tasks, implement, checklist, etc.) |
-
-## Environment Variables
-
-Copy `.env.example` to `.env`. Key variables:
-
-```bash
-# Vespa (local dev - no auth needed)
-VESPA_LOCAL_URL=http://localhost:8080
-VESPA_DATA_DIR=/mnt/vespa-storage
-
-# Vespa Cloud (production - pick one auth method)
-# VESPA_APP_TOKEN_URL=https://your-app.vespa-cloud.com
-# VESPA_CLOUD_SECRET_TOKEN=your-token
-# USE_MTLS=true
-# VESPA_APP_MTLS_URL=https://...
-# VESPA_CLOUD_MTLS_KEY=...
-# VESPA_CLOUD_MTLS_CERT=...
-
-# AI chat (optional)
-GEMINI_API_KEY=your-gemini-api-key
-
-# App settings
-LOG_LEVEL=INFO                     # DEBUG|INFO|WARNING|ERROR
-HOT_RELOAD=False
-
-# Procore database (optional)
-PROCORE_DATABASE_URL=postgresql://user:pass@host:5432/procore_int_v2
-
-# AWS S3 (optional, for direct file access)
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=us-east-1
-S3_BUCKET=procore-integration-files
-```
+SpecKit workflow commands (`/speckit.*`) are also available for feature specification and planning. Feature specs live in the `specs/` directory.
 
 ## Architecture
 
-### Request flow
+### Request Flow
 
 ```
-Browser (localhost:7860)
-    ↓ HTMX requests
-FastHTML App (main.py)
-    ├── SimMapGenerator (colpali.py) → ColQwen2.5 model → query embeddings
-    ├── VespaQueryClient (vespa_app.py) → Vespa search (HNSW + BM25)
-    ├── rerank.py → application-level MaxSim reranking
-    └── Gemini API → streaming AI chat responses (SSE)
+Browser → HTMX requests → FastHTML (main.py)
+  ├── SimMapGenerator (colpali.py) → ColQwen2.5 model → query embeddings
+  ├── VespaQueryClient (vespa_app.py) → Vespa (HNSW + BM25)
+  ├── rerank.py → application-level MaxSim reranking (NumPy)
+  ├── LLM chat → streaming SSE via OpenAI-compatible API
+  └── AgentSession (agent.py) → multi-step function-calling reasoning loop
 ```
 
-### Key routes (main.py)
+### Key Modules
 
-| Route | Method | Purpose |
-|-------|--------|---------|
-| `/` | GET | Home page |
-| `/search` | GET | Search interface with query + ranking |
-| `/fetch_results` | GET | HTMX endpoint for search results |
-| `/upload` | GET | PDF upload page |
-| `/upload` | POST | Handle PDF file upload and ingestion (250MB max) |
-| `/get_sim_map` | GET | Poll for similarity map readiness |
-| `/full_image` | GET | Full-res image (cached to disk) |
-| `/suggestions` | GET | Autocomplete suggestions |
-| `/get-message` | GET | SSE streaming Gemini chat response |
-| `/about-this-demo` | GET | Demo information |
-| `/app` | GET | Vespa connection status page |
-| `/static/{filepath}` | GET | Static file serving |
+**`main.py`** — FastHTML app entry point. All routes defined here. Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `_resolve_llm_config()` for LLM provider selection and `message_generator()` for SSE chat streaming via httpx.
 
-### Embedding model
+**`backend/vespa_app.py`** — `VespaQueryClient` class. Three connection modes (local, mTLS, token). Query dispatching for bm25, colpali, and hybrid ranking. Handles tensor format conversions between Python/NumPy and Vespa's block format. Key methods: `get_result_from_query()`, `query_vespa_colpali()`, `query_vespa_bm25()`, `get_sim_maps_from_query()`.
 
-Active model: **ColQwen2.5** (`tsystems/colqwen2.5-3b-multilingual-v1.0`)
-- Embedding dimension: 128 per patch
-- Max visual tokens: 768
-- Binary quantization: 128 bits packed into 16 int8 values for HNSW
+**`backend/colpali.py`** — `SimMapGenerator` class. Loads the ColQwen2.5 model (`tsystems/colqwen2.5-3b-multilingual-v1.0`) with bfloat16. Query embeddings cached via `@lru_cache(maxsize=128)`. Generates similarity map heatmaps by blending viridis colormaps onto page images. CPU-bound inference runs in ThreadPoolExecutor.
 
-Model registry is in `backend/models/config.py`. Two models defined: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0). Use `get_model_config(id)` to retrieve and `get_available_models()` to list.
+**`backend/ingest.py`** — PDF ingestion pipeline. Validates → renders pages at 150 DPI (PyMuPDF) → extracts text → generates embeddings (binary int8 + float f32) → creates blur previews → feeds to Vespa. Supports region detection for large-format drawings (>2.8M pixels).
 
-### Ranking pipeline (Vespa)
+**`backend/drawing_regions.py`** — Region detection for large architectural/construction drawings. Two strategies: heuristic (whitespace-based grid segmentation) and VLM-assisted (sends image to LLM for semantic bounding boxes). Falls back to tiling if heuristic finds <2 regions. Each region becomes a separate Vespa document linked to its parent page.
 
-1. **Retrieval**: HNSW nearest neighbor on binary embeddings (Hamming distance)
-2. **First-phase**: MaxSim with binary embeddings (all candidates)
-3. **Second-phase**: MaxSim with float embeddings (top 10 reranked)
+**`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
-Available ranking profiles in `pdf_page.sd`:
-- `unranked` - no ranking
-- `bm25` - text only (`bm25(title) + bm25(text)`)
-- `colpali` - visual only (binary first-phase, float second-phase)
-- `hybrid` - combined (`max_sim + 2 * (bm25(text) + bm25(title) + bm25(tags))`)
-- `*_sim` variants - same logic plus similarity map tensors in summary features
+**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events. **Note:** imports from `backend.llm_config` which does not yet exist — this module needs to be created to extract LLM config functions from main.py.
 
-Application-level reranking (`backend/rerank.py`) uses full float embeddings fetched from Vespa to compute MaxSim scores in Python/NumPy.
+**`backend/models/config.py`** — Model registry. Two models defined: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
 
-### Vespa schemas
+**`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
-**`pdf_page.sd`** - Main document schema:
-- `embedding`: `tensor<int8>(patch{}, v[16])` - binary, HNSW indexed
-- `embedding_float`: `tensor<float>(patch{}, v[128])` - full precision, attribute only
-- Text fields: `title`, `text`, `snippet`, `tags` (BM25 indexed)
-- Images: `blur_image`, `full_image` (raw base64)
+**`frontend/app.py`** — All UI components as PascalCase functions returning FastHTML elements. Key components: `Home`, `Search`, `SearchResult`, `ChatResult`, `UploadPage`, `SimMapButtonPoll`/`SimMapButtonReady`.
 
-**`procore_record.sd`** - Database records with navigation metadata:
-- `relationships`: JSON array of outgoing relationship links
-- `file_references`: JSON array with S3 keys, source columns, provenance
-- `incoming_relationships`: reverse navigation hints
-- `table_description`, `column_types`: schema context for agents
-- Ranking: `bm25` on `content_text`, `freshness` variant
+**`frontend/layout.py`** — Page layout template, responsive grid JS (1-col mobile, 2-col desktop at 45fr/15fr), scrollbar initialization, theme toggle.
 
-**`procore_schema_metadata.sd`** - Schema metadata for agent reference:
-- `metadata_type`: "full_schema" or "table"
-- `columns`, `outgoing_relationships`, `incoming_relationships`
-- `file_reference_columns`, `timestamp_columns`
-- Ranking: BM25 on `content_text` + `table_description`
+### Embedding & Ranking Pipeline
 
-### PDF ingestion flow (backend/ingest.py)
+Two embedding representations stored in Vespa:
+- **Binary:** `tensor<int8>(patch{}, v[16])` — 128 bits packed via `np.packbits`, HNSW-indexed (Hamming distance)
+- **Float:** `tensor<float>(patch{}, v[128])` — full precision, attribute-only (no index)
 
-1. Validate PDF (encrypted? page count?)
-2. Render pages to PIL images at 150 DPI via PyMuPDF
-3. Extract and sanitize text per page
-4. Generate ColPali embeddings (binary int8 + float f32)
-5. Create blur preview images
-6. Feed documents to Vespa `pdf_page` schema
+Ranking phases:
+1. **Retrieval:** HNSW nearest neighbor on binary embeddings
+2. **First-phase:** MaxSim with binary embeddings (all candidates)
+3. **Second-phase:** MaxSim with float embeddings (top 10)
+4. **Optional app-level rerank:** Full MaxSim in Python/NumPy (`backend/rerank.py`)
 
-### Database ingestion subsystem (backend/ingestion/)
+Ranking profiles in `vespa-app/schemas/pdf_page.sd`: `unranked`, `bm25`, `colpali`, `hybrid`, and `*_sim` variants (same logic + similarity map tensors).
 
-For Procore PostgreSQL integration:
-1. `schema_discovery.py` - auto-discovers tables, columns, relationships, file references
-2. `record_ingester.py` - transforms rows into Vespa documents with navigation metadata
-3. `file_detector.py` / `file_downloader.py` - detects and downloads S3/URL file references
-4. `change_detector.py` / `checkpoint.py` - enables incremental sync (SQLite-backed)
-5. `sync_manager.py` - orchestrates full and incremental ingestion cycles
-6. `pdf_processor.py` - processes downloaded PDFs with lazy-loaded ColPali model
-7. `exceptions.py` - custom exception hierarchy (ConnectionError, SchemaError, TransformError, IndexError, DownloadError)
+### LLM Provider Configuration
 
-### Frontend
+All LLM/AI calls go through a single OpenAI-compatible API abstraction (`_resolve_llm_config()` in main.py):
 
-- **Framework**: FastHTML with HTMX for dynamic updates (no SPA, no JS framework)
-- **Styling**: Tailwind CSS with Shad4Fast (shadcn port)
-- **Components** (`frontend/app.py`): `Home`, `Hero`, `SampleQueries`, `Search`, `SearchBox`, `SearchInfo`, `SearchResult`, `ShareButtons`, `UploadPage`, `UploadForm`, `UploadSidebar`, `UploadSuccess`, `UploadError`, `ChatResult`, `SimMapButtonPoll`, `SimMapButtonReady`, `LoadingMessage`, `LoadingSkeleton`, `LinkResource`, `AboutThisDemo`
-- **Layout** (`frontend/layout.py`): page template, JS for responsive grid, scrollbars, image swapping, input validation
-- **Libraries**: OverlayScrollbars, Awesomplete (autocomplete), HighlightJS, htmx-ext-sse
+| Priority | Provider | Base URL | API Key Env Var |
+|----------|----------|----------|-----------------|
+| 1 | Explicit | `LLM_BASE_URL` | `OPENROUTER_API_KEY` or `OPENAI_API_KEY` |
+| 2 | OpenAI direct | `https://api.openai.com/v1` | `OPENAI_API_KEY` (when no OPENROUTER key) |
+| 3 | OpenRouter (default) | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| 4 | Local Ollama | `LLM_BASE_URL=http://localhost:11434/v1` | none |
+
+Chat model set via `CHAT_MODEL` env var (default: `google/gemini-2.5-flash`).
+
+### Vespa Schemas
+
+- **`pdf_page.sd`** — Main document schema: embeddings (binary + float), text fields (title, text, snippet, tags with BM25), images (blur + full as base64). Region documents link back via `parent_doc_id`.
+- **`procore_record.sd`** — Database records with relationship navigation metadata, file references, schema context for agents.
+- **`procore_schema_metadata.sd`** — Schema metadata for agent-assisted navigation.
 
 ## Code Conventions
 
-- Python 3.11+ (3.12 for main app)
-- Async where I/O-bound (asyncpg, aiohttp, Vespa queries)
-- Sync for CPU-bound work (model inference via ThreadPoolExecutor)
-- Dependencies pinned via `uv pip compile` output in `requirements.txt`
-- Logging via stdlib `logging` module (not loguru in main app)
-- Environment config via `python-dotenv`
-- No ORM for Procore DB - raw asyncpg with parameterized queries
-- Vespa documents fed via pyvespa client library
-- Git LFS for large binary files (models, images, archives) - see `.gitattributes`
+- Async for I/O-bound work (Vespa queries, HTTP, asyncpg). Sync for CPU-bound work (model inference via `ThreadPoolExecutor`).
+- Dependencies pinned via `uv pip compile` → `requirements.txt`. Local dev deps in `requirements-local.txt`.
+- Logging via stdlib `logging` (not loguru). Environment config via `python-dotenv`.
+- No ORM — raw asyncpg with parameterized queries for Procore DB.
+- Vespa documents fed via pyvespa client library.
+- Git LFS for large binaries (model weights, `tailwindcss` binary, demo images) — see `.gitattributes`.
+- Frontend components are PascalCase functions; backend helpers are snake_case.
+- FastHTML routes use `@rt()` decorator for GET/POST, `@app.get()` for explicit GET.
+- Tailwind CSS compiled via `tailwindcss` binary (Git LFS tracked). Config in `tailwind.config.js` references shad4fast components from venv.
+- No CI/CD pipelines — testing and linting run via slash commands or manually.
 
-## Testing
+### Testing Conventions
 
-### Structure
+- pytest with pytest-asyncio for async tests.
+- Preferred flags: `pytest -v -x --tb=short` (verbose, fail on first error, short tracebacks).
+- `tests/conftest.py` provides shared fixtures: `mock_vespa_client`, `mock_db_connection`, `sample_record`, `sample_table_columns`, `sample_jsonb_attachments`, `test_data_dir`, `database_url`, `vespa_url`.
+- Integration tests require running Vespa and/or database services.
 
-```
-tests/
-├── conftest.py                   # Shared pytest fixtures
-├── unit/ingestion/               # Unit tests for ingestion modules
-└── integration/ingestion/        # Integration tests (require running services)
-```
+## Environment Variables
 
-### Available fixtures (conftest.py)
+Copy `.env.example` to `.env`. Key groups:
 
-- `event_loop` - session-scoped asyncio event loop
-- `test_data_dir` - temporary directory for test data
-- `mock_db_connection` - mock async PostgreSQL connection
-- `mock_vespa_client` - mock Vespa client (feed, delete, query)
-- `sample_table_columns` - sample column metadata for schema discovery tests
-- `sample_record` - sample database record for transformation tests
-- `sample_jsonb_attachments` - sample JSONB data for file detection tests
-- `database_url` / `vespa_url` - connection URLs from env or defaults
-
-## Tooling
-
-### Speckit (.specify/)
-
-Feature specification tooling for structured feature development. Contains:
-- `memory/constitution.md` - project constitution template
-- `scripts/bash/` - automation scripts (prerequisites, new feature setup, plan creation)
-- `templates/` - templates for specs, plans, checklists, tasks, and agent files
-
-Used via the `speckit.*` Claude IDE commands for feature workflows:
-`/speckit.analyze` → `/speckit.specify` → `/speckit.plan` → `/speckit.tasks` → `/speckit.implement`
-
-### Feature specs (specs/)
-
-Each feature has a directory under `specs/` containing:
-- `spec.md` - feature specification
-- `plan.md` - implementation plan
-- `tasks.md` - task breakdown
-- `research.md` - research findings
-- `data-model.md` - data model design
-- `quickstart.md` - getting started guide
-- `checklists/requirements.md` - requirements checklist
-- `contracts/*.md` - API and interface contracts
+- **Vespa:** `VESPA_LOCAL_URL` (default `http://localhost:8080`), or cloud auth via `VESPA_CLOUD_SECRET_TOKEN` / mTLS certs
+- **LLM:** `LLM_BASE_URL`, `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, `CHAT_MODEL`
+- **App:** `LOG_LEVEL`, `HOT_RELOAD`
+- **Procore DB (optional):** `PROCORE_DATABASE_URL`
+- **AWS S3 (optional):** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `S3_BUCKET`
 
 ## Local Development Setup
 
 ```bash
-docker-compose up -d                              # Start Vespa
+docker-compose up -d                              # Start Vespa (~8GB RAM needed)
 vespa deploy vespa-app -t http://localhost:19071   # Deploy schemas
 pip install -r requirements.txt
-pip install -r requirements-local.txt
+pip install -r requirements-local.txt              # ruff, pymupdf, reportlab
 python -m spacy download en_core_web_sm
-cp .env.example .env                              # Edit as needed
+cp .env.example .env                              # Configure LLM provider
 python scripts/feed_data.py --sample              # Index sample data
 python main.py                                    # http://localhost:7860
 ```
 
-Or use the automated setup script for Docker + Vespa:
-```bash
-./scripts/setup_local.sh                          # Handles Docker, wait, deploy
-```
-
-Vespa needs ~8GB RAM minimum. Docker ports: 8080 (query/feed API), 19071 (config server).
+Docker ports: 8080 (query/feed API), 19071 (config server).
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
