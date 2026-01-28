@@ -1,7 +1,6 @@
 "use client";
 
-import { FileSearch, Layers, Clock, Zap } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { FileSearch, Layers, Zap } from "lucide-react";
 import { ResultCard } from "./result-card";
 import { SkeletonResultCard } from "@/components/ui/skeleton";
 import type { SearchResult } from "@/types";

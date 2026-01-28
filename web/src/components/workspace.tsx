@@ -1,35 +1,35 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/topbar";
 import { ScopeBar } from "@/components/scope/scope-bar";
 import { QueryInput } from "@/components/search/query-input";
-import { FileSearch } from "@/components/search/file-search";
 import { SplitView } from "@/components/results/split-view";
 import { DocumentViewer } from "@/components/document/document-viewer";
 import { useProject, useScope } from "@/hooks/use-project";
 import { useSearch } from "@/hooks/use-search";
+import { useAppStore } from "@/lib/store";
 import type { Citation } from "@/types";
 
 export function Workspace() {
-  const [isDark, setIsDark] = useState(true);
+  const { isDark, toggleTheme } = useAppStore();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [showFileSearch, setShowFileSearch] = useState(false);
   const [previewResultId, setPreviewResultId] = useState<string | null>(null);
 
   const { projects, activeProject, selectProject } = useProject();
   const scope = useScope();
   const search = useSearch();
 
+  // Sync dark mode class with store
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", isDark);
+  }, [isDark]);
+
   const handleToggleTheme = useCallback(() => {
-    setIsDark((prev) => {
-      const next = !prev;
-      document.documentElement.classList.toggle("dark", next);
-      return next;
-    });
-  }, []);
+    toggleTheme();
+  }, [toggleTheme]);
 
   const handleSearch = useCallback(
     (query: string) => {
@@ -51,16 +51,6 @@ export function Workspace() {
     [search]
   );
 
-  const handleToggleDocument = useCallback(
-    (docId: string) => {
-      if (scope.selectedDocumentIds.includes(docId)) {
-        scope.removeDocumentId(docId);
-      } else {
-        scope.addDocumentId(docId);
-      }
-    },
-    [scope]
-  );
 
   const handleSelectQuery = useCallback(
     (query: string) => {

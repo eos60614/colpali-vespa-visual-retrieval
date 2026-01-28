@@ -1,11 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 
-/**
- * GET /api/suggestions?query=...
- *
- * Returns autocomplete suggestions from the Vespa backend.
- */
-
 const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
 
 export async function GET(request: NextRequest) {
@@ -16,9 +10,18 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ suggestions: [] });
   }
 
-  // In production, forward to Python backend:
-  // const res = await fetch(`${BACKEND_URL}/suggestions?query=${encodeURIComponent(query)}`);
-  // return NextResponse.json(await res.json());
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/suggestions?query=${encodeURIComponent(query)}`
+    );
 
-  return NextResponse.json({ suggestions: [] });
+    if (!res.ok) {
+      return NextResponse.json({ suggestions: [] });
+    }
+
+    const data = await res.json();
+    return NextResponse.json(data);
+  } catch {
+    return NextResponse.json({ suggestions: [] });
+  }
 }

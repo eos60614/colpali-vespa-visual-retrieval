@@ -436,6 +436,21 @@ def get_and_store_sim_maps(
     return True
 
 
+@threaded
+def _download_images_bg(doc_ids):
+    """Download full images from Vespa to disk in background."""
+    for doc_id in doc_ids:
+        img_path = IMG_DIR / f"{doc_id}.jpg"
+        if not os.path.exists(img_path):
+            try:
+                image_data = asyncio.run(vespa_app.get_full_image_from_vespa(doc_id))
+                with open(img_path, "wb") as f:
+                    f.write(base64.b64decode(image_data))
+                logger.debug(f"Background download: saved {doc_id}")
+            except Exception as e:
+                logger.error(f"Background image download failed for {doc_id}: {e}")
+
+
 @app.get("/get_sim_map")
 async def get_sim_map(query_id: str, idx: int, token: str, token_idx: int):
     """
@@ -601,6 +616,100 @@ async def get_message(query_id: str, query: str, doc_ids: str):
         message_generator(query_id=query_id, query=query, doc_ids=doc_ids.split(",")),
         media_type="text/event-stream",
     )
+
+
+@app.post("/api/search")
+async def api_search(request):
+    """JSON search endpoint for the Next.js frontend.
+
+    Accepts JSON body: { query, ranking? }
+    Returns JSON with search results including blur images and doc IDs.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    query = body.get("query", "").strip()
+    ranking = body.get("ranking", "hybrid")
+
+    if not query:
+        return JSONResponse({"error": "Query is required"}, status_code=400)
+
+    query_id = generate_query_id(query, ranking)
+
+    # Run embedding inference
+    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
+        query
+    )
+
+    start = time.perf_counter()
+    result = await vespa_app.get_result_from_query(
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        rerank=True,
+        rerank_hits=20,
+        final_hits=3,
+    )
+    duration_ms = round((time.perf_counter() - start) * 1000)
+
+    search_results = vespa_app.results_to_search_results(result, idx_to_token)
+
+    # Trigger background sim map + image download (same as /fetch_results)
+    doc_ids = [r["fields"]["id"] for r in search_results]
+    get_and_store_sim_maps(
+        query_id=query_id,
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        doc_ids=doc_ids,
+    )
+
+    # Download full images to disk in background so /get-message can use them
+    _download_images_bg(doc_ids)
+
+    # Transform Vespa results to JSON-friendly format
+    results_json = []
+    for idx, sr in enumerate(search_results):
+        fields = sr.get("fields", {})
+        relevance = sr.get("relevance", 0)
+        results_json.append({
+            "id": fields.get("id", ""),
+            "title": fields.get("title", ""),
+            "page_number": fields.get("page_number", 0),
+            "snippet": fields.get("snippet", ""),
+            "text": fields.get("text", ""),
+            "blur_image": fields.get("blur_image", ""),
+            "relevance": relevance,
+            "url": fields.get("url", ""),
+        })
+
+    return JSONResponse({
+        "results": results_json,
+        "query": query,
+        "query_id": str(query_id),
+        "doc_ids": doc_ids,
+        "ranking": ranking,
+        "duration_ms": duration_ms,
+        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
+    })
+
+
+@app.get("/api/full_image")
+async def api_full_image(doc_id: str):
+    """JSON endpoint returning full-resolution image as base64."""
+    img_path = IMG_DIR / f"{doc_id}.jpg"
+    if not os.path.exists(img_path):
+        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
+        with open(img_path, "wb") as f:
+            f.write(base64.b64decode(image_data))
+    else:
+        with open(img_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+    return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
 
 
 @rt("/app")

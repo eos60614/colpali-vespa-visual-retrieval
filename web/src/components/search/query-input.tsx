@@ -1,9 +1,10 @@
 "use client";
 
-import { useState, useRef, useCallback, type KeyboardEvent, type FormEvent } from "react";
+import { useState, useRef, useCallback, useEffect, useReducer, type KeyboardEvent, type FormEvent } from "react";
 import { Search, ArrowUp, Sparkles, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { getSuggestions } from "@/lib/api-client";
 
 interface QueryInputProps {
   value: string;
@@ -34,12 +35,61 @@ export function QueryInput({
   placeholder,
 }: QueryInputProps) {
   const [isFocused, setIsFocused] = useState(false);
+  const [selectedSuggestionIdx, setSelectedSuggestionIdx] = useState(-1);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const suggestionsAbortRef = useRef<AbortController | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  type SuggestState = { items: string[]; visible: boolean };
+  type SuggestAction =
+    | { type: "clear" }
+    | { type: "show"; items: string[] }
+    | { type: "hide" };
+  const [suggestState, dispatchSuggest] = useReducer(
+    (_: SuggestState, action: SuggestAction): SuggestState => {
+      if (action.type === "clear") return { items: [], visible: false };
+      if (action.type === "show") return { items: action.items, visible: action.items.length > 0 };
+      return { ..._,  visible: false };
+    },
+    { items: [], visible: false }
+  );
+  const suggestions = suggestState.items;
+  const showSuggestions = suggestState.visible;
+
+  // Debounced suggestion fetching
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    suggestionsAbortRef.current?.abort();
+
+    if (!value || value.length < 2) {
+      dispatchSuggest({ type: "clear" });
+      return;
+    }
+
+    debounceRef.current = setTimeout(async () => {
+      const ctrl = new AbortController();
+      suggestionsAbortRef.current = ctrl;
+      try {
+        const results = await getSuggestions(value, ctrl.signal);
+        if (!ctrl.signal.aborted) {
+          dispatchSuggest({ type: "show", items: results.slice(0, 6) });
+          setSelectedSuggestionIdx(-1);
+        }
+      } catch {
+        // aborted or failed
+      }
+    }, 250);
+
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [value]);
 
   const handleSubmit = useCallback(
     (e?: FormEvent) => {
       e?.preventDefault();
       if (value.trim() && !isSearching) {
+        dispatchSuggest({ type: "hide" });
         onSubmit(value.trim());
         inputRef.current?.blur();
       }
@@ -49,12 +99,41 @@ export function QueryInput({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (showSuggestions && suggestions.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setSelectedSuggestionIdx((prev) =>
+            prev < suggestions.length - 1 ? prev + 1 : 0
+          );
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setSelectedSuggestionIdx((prev) =>
+            prev > 0 ? prev - 1 : suggestions.length - 1
+          );
+          return;
+        }
+        if (e.key === "Escape") {
+          dispatchSuggest({ type: "hide" });
+          return;
+        }
+        if (e.key === "Enter" && !e.shiftKey && selectedSuggestionIdx >= 0) {
+          e.preventDefault();
+          const selected = suggestions[selectedSuggestionIdx];
+          onChange(selected);
+          dispatchSuggest({ type: "hide" });
+          onSubmit(selected);
+          inputRef.current?.blur();
+          return;
+        }
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleSubmit();
       }
     },
-    [handleSubmit]
+    [handleSubmit, showSuggestions, suggestions, selectedSuggestionIdx, onChange, onSubmit]
   );
 
   const handleSampleQuery = useCallback(
@@ -97,8 +176,15 @@ export function QueryInput({
                 e.target.style.height = "auto";
                 e.target.style.height = Math.min(e.target.scrollHeight, 120) + "px";
               }}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setIsFocused(false)}
+              onFocus={() => {
+                setIsFocused(true);
+                if (suggestions.length > 0) dispatchSuggest({ type: "show", items: suggestions });
+              }}
+              onBlur={() => {
+                setIsFocused(false);
+                // Delay hiding so click on suggestion registers
+                setTimeout(() => dispatchSuggest({ type: "hide" }), 200);
+              }}
               onKeyDown={handleKeyDown}
               placeholder={
                 placeholder || "Ask about your construction documents..."
@@ -149,6 +235,33 @@ export function QueryInput({
             </div>
           </div>
         </div>
+
+        {/* Autocomplete suggestions dropdown */}
+        {showSuggestions && suggestions.length > 0 && isFocused && (
+          <div className="absolute left-0 right-0 top-full mt-1 z-50 rounded-[var(--radius-lg)] border border-[var(--border-primary)] bg-[var(--bg-elevated)] shadow-[var(--shadow-md)] overflow-hidden">
+            {suggestions.map((s, i) => (
+              <button
+                key={s}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onChange(s);
+                  dispatchSuggest({ type: "hide" });
+                  onSubmit(s);
+                }}
+                className={cn(
+                  "w-full text-left px-4 py-2 text-sm flex items-center gap-2 cursor-pointer",
+                  "transition-colors",
+                  i === selectedSuggestionIdx
+                    ? "bg-[var(--accent-glow)] text-[var(--accent-primary)]"
+                    : "text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]"
+                )}
+              >
+                <Search className="h-3 w-3 opacity-40 shrink-0" />
+                <span className="truncate">{s}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </form>
 
       {/* Sample queries */}

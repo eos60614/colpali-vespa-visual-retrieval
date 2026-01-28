@@ -1,8 +1,9 @@
 "use client";
 
-import { cn } from "@/lib/utils";
+import { useReducer, useEffect } from "react";
 import { SourcePanel } from "./source-panel";
 import { AnswerPanel } from "./answer-panel";
+import { getFullImage } from "@/lib/api-client";
 import type { SearchResult, AIAnswer, Citation } from "@/types";
 
 interface SplitViewProps {
@@ -88,6 +89,30 @@ export function SplitView({
 }
 
 function SelectedSourcePreview({ result }: { result?: SearchResult }) {
+  type ImageState = { image: string | null; loading: boolean };
+  type ImageAction = { type: "loading" } | { type: "loaded"; image: string | null };
+  const [imgState, dispatchImg] = useReducer(
+    (_: ImageState, action: ImageAction): ImageState => {
+      if (action.type === "loading") return { image: null, loading: true };
+      return { image: action.image, loading: false };
+    },
+    { image: null, loading: false }
+  );
+  const docId = result?.documentId;
+
+  useEffect(() => {
+    if (!docId) return;
+    let cancelled = false;
+    dispatchImg({ type: "loading" });
+    getFullImage(docId)
+      .then((img) => { if (!cancelled) dispatchImg({ type: "loaded", image: img }); })
+      .catch(() => { if (!cancelled) dispatchImg({ type: "loaded", image: null }); });
+    return () => { cancelled = true; };
+  }, [docId]);
+
+  const fullImage = imgState.image;
+  const loading = imgState.loading;
+
   if (!result) return null;
 
   return (
@@ -98,26 +123,38 @@ function SelectedSourcePreview({ result }: { result?: SearchResult }) {
         </span>
       </div>
 
-      {/* Page preview placeholder */}
+      {/* Page preview */}
       <div className="rounded-[var(--radius-lg)] border border-[var(--border-primary)] overflow-hidden bg-[var(--bg-secondary)]">
         <div className="aspect-[8.5/11] bg-[var(--bg-tertiary)] flex items-center justify-center relative">
-          {/* Simulated document page */}
-          <div className="absolute inset-4 bg-[var(--bg-elevated)] rounded-[var(--radius-md)] shadow-[var(--shadow-md)] p-6 flex flex-col gap-3">
-            <div className="skeleton h-4 w-3/4" />
-            <div className="skeleton h-3 w-full" />
-            <div className="skeleton h-3 w-full" />
-            <div className="skeleton h-3 w-5/6" />
-            <div className="mt-2 skeleton h-3 w-full" />
-            <div className="skeleton h-3 w-full" />
-            <div className="skeleton h-3 w-2/3" />
-            <div className="mt-auto flex justify-between">
-              <div className="skeleton h-2 w-20" />
-              <div className="skeleton h-2 w-12" />
+          {loading ? (
+            <div className="absolute inset-4 bg-[var(--bg-elevated)] rounded-[var(--radius-md)] shadow-[var(--shadow-md)] p-6 flex flex-col gap-3">
+              <div className="skeleton h-4 w-3/4" />
+              <div className="skeleton h-3 w-full" />
+              <div className="skeleton h-3 w-full" />
+              <div className="skeleton h-3 w-5/6" />
+              <div className="mt-2 skeleton h-3 w-full" />
+              <div className="skeleton h-3 w-full" />
+              <div className="skeleton h-3 w-2/3" />
+              <div className="mt-auto flex justify-between">
+                <div className="skeleton h-2 w-20" />
+                <div className="skeleton h-2 w-12" />
+              </div>
             </div>
-          </div>
-
-          {/* Highlight overlay */}
-          <div className="absolute top-[30%] left-[15%] right-[15%] h-16 border-2 border-[var(--accent-primary)] rounded-[var(--radius-sm)] bg-[var(--accent-glow)] animate-pulse opacity-60" />
+          ) : fullImage ? (
+            <img
+              src={fullImage}
+              alt={`${result.title} — Page ${result.pageNumber}`}
+              className="w-full h-full object-contain"
+            />
+          ) : result.blurImage ? (
+            <img
+              src={result.blurImage}
+              alt={`${result.title} — Page ${result.pageNumber} (preview)`}
+              className="w-full h-full object-contain opacity-60"
+            />
+          ) : (
+            <p className="text-xs text-[var(--text-tertiary)]">Image unavailable</p>
+          )}
         </div>
 
         {/* Source info bar */}

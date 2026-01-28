@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useReducer, useEffect } from "react";
 import {
   X,
   ZoomIn,
@@ -9,83 +9,25 @@ import {
   ChevronRight,
   Download,
   Copy,
-  Maximize2,
   FileText,
   Tag,
-  Clock,
-  Hash,
   Database,
   Link2,
-  Cpu,
-  Layers,
   ExternalLink,
   BookmarkPlus,
   Share2,
-  Info,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
+import { getFullImage } from "@/lib/api-client";
 import {
   CATEGORY_LABELS,
   CATEGORY_COLORS,
   type SearchResult,
   type DocumentMetadata,
-  type RelatedDocument,
 } from "@/types";
-
-// Demo metadata — in production this comes from the API
-const DEMO_METADATA: Record<string, DocumentMetadata> = {
-  "doc-fire-protection": {
-    id: "doc-fire-protection",
-    title: "Fire Protection — MEP Drawings Sheet M-401",
-    documentNumber: "M-401",
-    category: "drawing",
-    pageCount: 24,
-    fileSize: "14.2 MB",
-    uploadedAt: "2025-01-05T09:30:00Z",
-    modifiedAt: "2025-01-10T14:15:00Z",
-    tags: ["MEP", "fire protection", "mechanical", "NFPA 90A"],
-    url: "/documents/M-401.pdf",
-    source: "Procore",
-    author: "Smith & Associates MEP",
-    revision: "Rev C",
-    relatedDocuments: [
-      { id: "doc-rfi-287", title: "RFI #287 — Fire Damper Installation", relationship: "referenced_by" },
-      { id: "doc-spec-23", title: "Spec Section 23 33 00 — Ductwork", relationship: "references" },
-      { id: "doc-submittal-145", title: "Submittal #145 — Ruskin FSD60", relationship: "related" },
-    ],
-    vespaDocId: "id:copoly:pdf_page::M-401",
-    embeddingModel: "ColQwen2.5",
-    indexedAt: "2025-01-05T09:45:00Z",
-    extractedTextLength: 12847,
-    hasRegions: true,
-    regionCount: 6,
-  },
-  "doc-rfi-287": {
-    id: "doc-rfi-287",
-    title: "RFI #287 — Fire Damper Installation at Level 3 Corridor",
-    documentNumber: "RFI-287",
-    category: "rfi",
-    pageCount: 3,
-    fileSize: "1.8 MB",
-    uploadedAt: "2025-01-10T11:00:00Z",
-    tags: ["fire damper", "mechanical", "corridor", "Level 3"],
-    source: "Procore",
-    author: "ABC Mechanical Contractors",
-    revision: "Response Final",
-    relatedDocuments: [
-      { id: "doc-fire-protection", title: "MEP Drawing M-401", relationship: "references" },
-    ],
-    vespaDocId: "id:copoly:pdf_page::RFI-287",
-    embeddingModel: "ColQwen2.5",
-    indexedAt: "2025-01-10T11:15:00Z",
-    extractedTextLength: 3421,
-    hasRegions: false,
-    regionCount: 0,
-  },
-};
 
 interface DocumentViewerProps {
   result: SearchResult | null;
@@ -95,10 +37,33 @@ interface DocumentViewerProps {
 
 export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewerProps) {
   const [activeTab, setActiveTab] = useState<"details" | "metadata" | "related">("details");
+  type ImgState = { image: string | null; loading: boolean };
+  type ImgAction = { type: "loading" } | { type: "loaded"; image: string | null };
+  const [imgState, dispatchImg] = useReducer(
+    (_: ImgState, action: ImgAction): ImgState => {
+      if (action.type === "loading") return { image: null, loading: true };
+      return { image: action.image, loading: false };
+    },
+    { image: null, loading: false }
+  );
+  const docId = result?.documentId;
+
+  useEffect(() => {
+    if (!docId) return;
+    let cancelled = false;
+    dispatchImg({ type: "loading" });
+    getFullImage(docId)
+      .then((img) => { if (!cancelled) dispatchImg({ type: "loaded", image: img }); })
+      .catch(() => { if (!cancelled) dispatchImg({ type: "loaded", image: null }); });
+    return () => { cancelled = true; };
+  }, [docId]);
+
+  const fullImage = imgState.image;
+  const imageLoading = imgState.loading;
 
   if (!result) return null;
 
-  const metadata = DEMO_METADATA[result.documentId] ?? null;
+  const metadata: DocumentMetadata | null = null;
 
   return (
     <div className="fixed inset-0 z-50 animate-fade-in">
@@ -165,36 +130,35 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
         <div className="flex-1 flex min-h-0">
           {/* Page viewport */}
           <div className="flex-1 overflow-auto p-8 bg-[var(--bg-tertiary)] flex items-center justify-center">
-            <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm" style={{ width: "612px", height: "792px" }}>
-              <div className="p-12 h-full flex flex-col">
-                <div className="space-y-4 flex-1">
-                  <div className="h-5 bg-gray-200 rounded w-3/4" />
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-5/6" />
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-2/3" />
-
-                  {/* Highlighted region */}
-                  <div className="relative my-4 p-3 border-2 border-[#d97756] rounded bg-[#d9775610]">
-                    <div className="h-3 bg-gray-200 rounded w-full" />
-                    <div className="h-3 bg-gray-200 rounded w-full mt-2" />
-                    <div className="h-3 bg-gray-200 rounded w-4/5 mt-2" />
-                    <div className="absolute -top-2 -right-2 bg-[#d97756] text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
-                      Match
-                    </div>
-                  </div>
-
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-full" />
-                  <div className="h-3 bg-gray-100 rounded w-3/4" />
-                </div>
-                <div className="flex justify-between mt-auto pt-4 border-t border-gray-100">
-                  <span className="text-[10px] text-gray-400">{result.documentId}</span>
-                  <span className="text-[10px] text-gray-400">Page {result.pageNumber}</span>
+            {imageLoading ? (
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm flex items-center justify-center" style={{ width: "612px", height: "792px" }}>
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-8 h-8 border-2 border-[var(--accent-primary)] border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-gray-400">Loading page...</p>
                 </div>
               </div>
-            </div>
+            ) : fullImage ? (
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden max-h-full">
+                <img
+                  src={fullImage}
+                  alt={`${result.title} — Page ${result.pageNumber}`}
+                  className="max-w-full max-h-full object-contain"
+                  style={{ maxWidth: "612px" }}
+                />
+              </div>
+            ) : result.blurImage ? (
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden" style={{ width: "612px", height: "792px" }}>
+                <img
+                  src={result.blurImage}
+                  alt={`${result.title} — Page ${result.pageNumber} (preview)`}
+                  className="w-full h-full object-contain opacity-60"
+                />
+              </div>
+            ) : (
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm flex items-center justify-center" style={{ width: "612px", height: "792px" }}>
+                <p className="text-xs text-gray-400">Image unavailable</p>
+              </div>
+            )}
           </div>
 
           {/* Right panel — tabbed metadata */}
