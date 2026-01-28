@@ -65,13 +65,13 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "provide_answer",
-            "description": "Provide the final answer to the user's question after gathering enough information. Call this when you have enough context to answer.",
+            "description": "Provide the final answer to the user's question after gathering enough information. Call this when you have enough context to answer. Your answer MUST cite specific document titles and page numbers for every claim using the format: (Source: [Title], Page [N]). End with a Sources section listing all referenced documents.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "answer": {
                         "type": "string",
-                        "description": "The final answer in HTML format. Use only simple tags: <b>, <p>, <i>, <br>, <ul>, <li>. No backticks or tables.",
+                        "description": "The final answer in HTML format. MUST include citations with document title and page number for every claim. Use only simple tags: <b>, <p>, <i>, <br>, <ul>, <li>. No backticks or tables. End with a Sources section.",
                     },
                 },
                 "required": ["answer"],
@@ -80,22 +80,28 @@ AGENT_TOOLS = [
     },
 ]
 
-AGENT_SYSTEM_PROMPT = """You are a document retrieval agent. Your job is to answer the user's question by searching through a corpus of PDF documents.
+AGENT_SYSTEM_PROMPT = """You are a document retrieval agent. Your job is to answer the user's question by searching through a corpus of PDF documents. You MUST answer ONLY from the documents you find. Do NOT use outside knowledge.
 
-You have access to tools:
+TOOLS:
 1. search_documents - Search for relevant pages. You can search multiple times with different queries.
-2. get_page_text - Read the full text of a result from your most recent search.
+2. get_page_text - Read the full text of a specific result from your most recent search.
 3. provide_answer - Give your final answer when you have enough information.
 
-Strategy:
+STRATEGY:
 - Start by searching with the user's query or a reformulated version.
 - If the initial results don't fully answer the question, search again with different terms.
+- Use get_page_text to read document details when you need more context.
 - You can make up to 5 tool calls before providing an answer.
 - Look at both the images and text of results to form your answer.
-- If you can't find relevant information after searching, say so honestly.
 
-Your final answer should be HTML formatted using only simple tags: <b>, <p>, <i>, <br>, <ul>, <li>.
-Do NOT include backticks (`) in your response. Only simple HTML tags and text.
+STRICT CITATION RULES:
+- Every factual claim in your answer MUST cite the specific document title and page number where you found it.
+- Use this citation format: <b>(Source: [Document Title], Page [N])</b>
+- If you cannot find relevant information after searching, say: "I could not find enough information in the available documents to answer this question."
+- NEVER fabricate information or draw on knowledge outside the retrieved documents.
+- End your answer with a <b>Sources</b> section listing all documents and pages referenced.
+
+FORMAT: Use only simple HTML tags: <b>, <p>, <i>, <br>, <ul>, <li>. No backticks or tables.
 """
 
 MAX_AGENT_STEPS = 5
@@ -199,6 +205,43 @@ class AgentSession:
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
             })
+        return parts
+
+    def _build_image_content_parts_with_metadata(self, images: list) -> list:
+        """Convert PIL images to content parts with document metadata labels."""
+        parts = []
+        # Build metadata lookup from all_doc_ids and current_results
+        doc_metadata = {}
+        for child in self.current_results:
+            fields = child.get("fields", {})
+            doc_id = fields.get("id", "")
+            if doc_id:
+                doc_metadata[doc_id] = {
+                    "title": fields.get("title", "Unknown"),
+                    "page_number": fields.get("page_number", 0) + 1,
+                }
+
+        for i, img in enumerate(images):
+            # Add metadata label before each image
+            if i < len(self.all_doc_ids):
+                doc_id = self.all_doc_ids[i]
+                meta = doc_metadata.get(doc_id, {})
+                title = meta.get("title", "Unknown")
+                page = meta.get("page_number", "?")
+                parts.append({
+                    "type": "text",
+                    "text": f"[Document {i+1}: \"{title}\", Page {page}]",
+                })
+
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+
+        parts.append({"type": "text", "text": f"\n\nQuestion: {self.query}"})
         return parts
 
     async def run(self) -> AsyncGenerator[str, None]:
@@ -342,8 +385,7 @@ class AgentSession:
                     fb_model = get_chat_model()
                     fb_headers = build_auth_headers(fb_api_key)
 
-                    image_parts = self._build_image_content_parts(images)
-                    image_parts.append({"type": "text", "text": f"\n\nQuestion: {self.query}"})
+                    image_parts = self._build_image_content_parts_with_metadata(images)
 
                     async with httpx.AsyncClient(timeout=60.0) as client:
                         resp = await client.post(
@@ -352,9 +394,11 @@ class AgentSession:
                             json={
                                 "model": fb_model,
                                 "messages": [
-                                    {"role": "system", "content": """Answer the user's question based on the provided images.
+                                    {"role": "system", "content": """Answer the user's question using ONLY the provided document images. Do NOT use outside knowledge.
+For every claim, cite the document and page where you found it: <b>(Source: [Title], Page [N])</b>.
+If you cannot answer from these documents, say: "I could not find enough information in the provided documents to answer this question."
 Use only simple HTML tags: <b>, <p>, <i>, <br>, <ul>, <li>. No backticks or tables.
-If you can't answer from the images, say so honestly."""},
+End with a <b>Sources</b> section listing all referenced documents and pages."""},
                                     {"role": "user", "content": image_parts},
                                 ],
                             },
