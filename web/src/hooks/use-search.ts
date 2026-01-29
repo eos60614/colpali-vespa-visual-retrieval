@@ -8,6 +8,9 @@ import {
   getChatStreamUrl,
   type SearchResponse,
 } from "@/lib/api-client";
+import { getLogger } from "@/lib/logger";
+
+const logger = getLogger("useSearch");
 
 export function useSearch() {
   const [query, setQuery] = useState("");
@@ -150,7 +153,7 @@ export function useSearch() {
         }
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
-        console.error("Search failed:", e);
+        logger.error("Search failed", { error: e });
         setIsSearching(false);
       }
     },

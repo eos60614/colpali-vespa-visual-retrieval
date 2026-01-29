@@ -7,7 +7,6 @@ import base64
 import hashlib
 import io
 import json
-import logging
 import re
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -18,12 +17,13 @@ from PIL import Image
 from vespa.application import Vespa
 
 from backend.config import get
+from backend.logging_config import get_logger
 from backend.drawing_regions import (
     detect_and_extract_regions,
     should_detect_regions,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def validate_pdf(file_bytes: bytes) -> Tuple[bool, str]:

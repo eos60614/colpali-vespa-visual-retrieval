@@ -2,8 +2,10 @@
 PostgreSQL database connection management using asyncpg.
 """
 
-import logging
 from contextlib import asynccontextmanager
+from logging import Logger
+
+from backend.logging_config import get_logger
 from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlparse
@@ -57,11 +59,11 @@ class ConnectionConfig:
 class DatabaseConnection:
     """Async PostgreSQL connection manager with connection pooling."""
 
-    def __init__(self, config: ConnectionConfig, logger: Optional[logging.Logger] = None):
+    def __init__(self, config: ConnectionConfig, logger: Optional[Logger] = None):
         """Initialize connection with config."""
         self._config = config
         self._pool: Optional[asyncpg.Pool] = None
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
     async def connect(self) -> None:
         """Establish connection pool."""

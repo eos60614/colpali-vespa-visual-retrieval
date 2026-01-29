@@ -3,8 +3,10 @@ File download from S3 and URLs for indexing.
 """
 
 import asyncio
-import logging
 from dataclasses import dataclass
+from logging import Logger
+
+from backend.logging_config import get_logger
 from enum import Enum
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -48,7 +50,7 @@ class FileDownloader:
         self,
         download_dir: Path,
         strategy: DownloadStrategy = DownloadStrategy.PROCORE_URL,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
         aws_config: Optional[dict[str, str]] = None,
     ):
         """Initialize file downloader.
@@ -61,7 +63,7 @@ class FileDownloader:
         """
         self._download_dir = download_dir
         self._strategy = strategy
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
         self._aws_config = aws_config or {}
 
         # Create download directory

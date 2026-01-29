@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ClientErrorBoundary } from "./client-error-boundary";
 
 export const metadata: Metadata = {
   title: "KI55 — Construction Document Intelligence",
@@ -15,7 +16,9 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="antialiased">
-        {children}
+        <ClientErrorBoundary>
+          {children}
+        </ClientErrorBoundary>
       </body>
     </html>
   );

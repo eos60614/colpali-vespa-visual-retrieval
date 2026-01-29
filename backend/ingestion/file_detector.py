@@ -3,8 +3,10 @@ File reference detection and extraction from database records.
 """
 
 import json
-import logging
 import re
+from logging import Logger
+
+from backend.logging_config import get_logger
 from dataclasses import dataclass
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -43,7 +45,7 @@ class FileDetector:
     PROCORE_URL_PATTERN = re.compile(r"https?://storage\.procore\.com")
 
     def __init__(
-        self, schema_map: SchemaMap, logger: Optional[logging.Logger] = None
+        self, schema_map: SchemaMap, logger: Optional[Logger] = None
     ):
         """Initialize file detector.
 
@@ -52,7 +54,7 @@ class FileDetector:
             logger: Optional logger instance
         """
         self._schema_map = schema_map
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
         # Build lookup for file reference columns
         self._file_ref_columns = {

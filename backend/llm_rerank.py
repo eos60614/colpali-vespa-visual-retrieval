@@ -13,12 +13,12 @@ Enable via llm.llm_rerank_enabled in ki55.toml (default: disabled).
 """
 
 import json
-import logging
 from typing import Any
 
 import httpx
 
 from backend.config import get
+from backend.logging_config import get_logger
 from backend.llm_config import (
     build_auth_headers,
     get_chat_model,
@@ -26,7 +26,7 @@ from backend.llm_config import (
     resolve_llm_config,
 )
 
-logger = logging.getLogger("vespa_app")
+logger = get_logger(__name__)
 
 LLM_RERANK_SYSTEM_PROMPT = """You are a document relevance scorer. Given a user query and a list of document results (with title, page number, snippet, and text), score each document's relevance to the query on a scale of 0 to 10.
 

@@ -3,8 +3,10 @@ Record extraction, transformation, and Vespa indexing.
 """
 
 import json
-import logging
 from dataclasses import dataclass, field
+from logging import Logger
+
+from backend.logging_config import get_logger
 from datetime import datetime
 from typing import Any, AsyncIterator, Optional
 
@@ -199,7 +201,7 @@ class RecordIngester:
         db: DatabaseConnection,
         vespa_app: Any,
         schema_map: SchemaMap,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
     ):
         """Initialize record ingester.
 
@@ -212,7 +214,7 @@ class RecordIngester:
         self._db = db
         self._vespa = vespa_app
         self._schema_map = schema_map
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
         # Build lookup tables from schema map
         self._table_columns = {t.name: t.columns for t in schema_map.tables}

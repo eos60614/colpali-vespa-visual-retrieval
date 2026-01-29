@@ -2,8 +2,10 @@
 Change detection for incremental sync operations.
 """
 
-import logging
 from dataclasses import dataclass, field
+from logging import Logger
+
+from backend.logging_config import get_logger
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Optional, Set
 
@@ -50,7 +52,7 @@ class ChangeDetector:
         self,
         db: DatabaseConnection,
         checkpoint_store: CheckpointStore,
-        logger: Optional[logging.Logger] = None,
+        logger: Optional[Logger] = None,
         schema_map: Optional[SchemaMap] = None,
     ):
         """Initialize change detector.
@@ -63,7 +65,7 @@ class ChangeDetector:
         """
         self._db = db
         self._checkpoint_store = checkpoint_store
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
         # Build per-table timestamp column lookup from schema
         self._table_timestamp_columns: dict[str, list[str]] = {}
         if schema_map:

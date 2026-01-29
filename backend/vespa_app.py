@@ -2,6 +2,7 @@ import os
 import time
 from typing import Any, Dict, Tuple
 import asyncio
+import logging
 import numpy as np
 import torch
 from dotenv import load_dotenv
@@ -9,9 +10,9 @@ from vespa.application import Vespa
 from vespa.io import VespaQueryResponse
 from .colpali import SimMapGenerator
 import backend.stopwords
-import logging
 
 from backend.config import get
+from backend.logging_config import get_logger
 
 
 class VespaQueryClient:
@@ -20,7 +21,7 @@ class VespaQueryClient:
     SELECT_FIELDS = get("vespa", "select_fields")
     SELECT_FIELDS_WITH_EMBEDDING = get("vespa", "select_fields_with_embedding")
 
-    def __init__(self, logger: logging.Logger):
+    def __init__(self, logger: logging.Logger = None):
         """
         Initialize the VespaQueryClient by loading environment variables and establishing a connection to the Vespa application.
 
@@ -30,7 +31,7 @@ class VespaQueryClient:
         3. Token: Set VESPA_APP_TOKEN_URL and VESPA_CLOUD_SECRET_TOKEN
         """
         load_dotenv()
-        self.logger = logger
+        self.logger = logger or get_logger(__name__)
 
         # Check for local Vespa connection first (no auth required)
         local_url = os.environ.get("VESPA_LOCAL_URL")

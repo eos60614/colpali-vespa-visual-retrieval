@@ -3,8 +3,10 @@ Database schema introspection and documentation generation.
 """
 
 import json
-import logging
 import re
+from logging import Logger
+
+from backend.logging_config import get_logger
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -124,7 +126,7 @@ class SchemaDiscovery:
         "deleted_at",
     ]
 
-    def __init__(self, db: DatabaseConnection, logger: Optional[logging.Logger] = None):
+    def __init__(self, db: DatabaseConnection, logger: Optional[Logger] = None):
         """Initialize schema discovery.
 
         Args:
@@ -132,7 +134,7 @@ class SchemaDiscovery:
             logger: Optional logger instance
         """
         self._db = db
-        self._logger = logger or logging.getLogger(__name__)
+        self._logger = logger or get_logger(__name__)
 
     async def discover(self, include_samples: bool = False) -> SchemaMap:
         """Perform full schema discovery.
