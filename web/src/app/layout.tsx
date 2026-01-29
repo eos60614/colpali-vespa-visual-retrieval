@@ -3,7 +3,7 @@ import "./globals.css";
 import { ClientErrorBoundary } from "./client-error-boundary";
 
 export const metadata: Metadata = {
-  title: "CoPoly — Construction Document Intelligence",
+  title: "KI55 — Construction Document Intelligence",
   description:
     "Visual document retrieval for construction projects. Search across drawings, RFIs, submittals, and specs with AI-powered understanding.",
 };

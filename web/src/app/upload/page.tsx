@@ -1,7 +1,7 @@
 import { UploadForm } from "@/components/upload/upload-form";
 
 export const metadata = {
-  title: "Upload — CoPoly",
+  title: "Upload — KI55",
   description: "Upload PDF documents for indexing and search.",
 };
 

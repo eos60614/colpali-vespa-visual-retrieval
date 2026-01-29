@@ -29,7 +29,7 @@ export function AnswerPanel({ answer, isStreaming, onCitationClick, onRetry }: A
           <Sparkles className="h-3 w-3 text-white" />
         </div>
         <span className="text-sm font-semibold text-[var(--text-primary)]">
-          CoPoly
+          KI55
         </span>
         {isStreaming && (
           <span className="text-[11px] text-[var(--accent-primary)] animate-pulse">
