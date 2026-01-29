@@ -93,9 +93,9 @@ description = "Better multilingual support, improved chart/table understanding"
 requires_flash_attention = false
 
 [search]
-rerank_hits = 20
-final_hits = 5
-num_images = 5
+rerank_hits = 20       # Number of candidates to fetch for MaxSim reranking
+final_hits = 5         # Number of search results returned to frontend
+num_images = 5         # Number of document images sent to LLM for synthesis
 
 [image]
 jpeg_quality = 85
