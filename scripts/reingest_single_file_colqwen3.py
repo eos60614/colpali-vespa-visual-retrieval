@@ -66,7 +66,7 @@ def get_vespa_client() -> Vespa:
     token_url = os.environ.get("VESPA_APP_TOKEN_URL")
     token = os.environ.get("VESPA_CLOUD_SECRET_TOKEN")
     if token_url and token:
-        print(f"Connecting to Vespa Cloud")
+        print("Connecting to Vespa Cloud")
         return Vespa(url=token_url, vespa_cloud_secret_token=token)
 
     raise ValueError("No Vespa connection configured")
@@ -226,7 +226,7 @@ def main():
     doc_id_list = list(doc_images.keys())
     all_updates = []
 
-    print(f"\nGenerating ColQwen3 embeddings...")
+    print("\nGenerating ColQwen3 embeddings...")
     for batch_start in tqdm(range(0, len(doc_id_list), args.batch_size), desc="GPU batches"):
         batch_end = min(batch_start + args.batch_size, len(doc_id_list))
         batch_doc_ids = doc_id_list[batch_start:batch_end]
@@ -280,13 +280,13 @@ def main():
     print(f"Total pages:         {num_pages}")
     print(f"Successfully updated: {success_count}")
     print(f"Errors:              {error_count}")
-    print(f"\n--- TIMING BREAKDOWN ---")
+    print("\n--- TIMING BREAKDOWN ---")
     print(f"Model loading:       {timing_stats['model_load']:.2f}s")
     print(f"Fetch document IDs:  {timing_stats['fetch_ids']:.2f}s")
     print(f"Fetch images:        {timing_stats['fetch_images']:.2f}s")
     print(f"Generate embeddings: {timing_stats['generate_embeddings']:.2f}s")
     print(f"Update Vespa:        {timing_stats['update_vespa']:.2f}s")
-    print(f"\n--- SUMMARY ---")
+    print("\n--- SUMMARY ---")
     print(f"Total time:          {total_time:.2f}s")
     processing_time = timing_stats['generate_embeddings'] + timing_stats['update_vespa']
     print(f"Processing time:     {processing_time:.2f}s (embedding + update)")

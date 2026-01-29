@@ -1,7 +1,7 @@
 """
-PDF processing for database-ingested files.
+Document processing for database-ingested files (PDFs and images).
 
-Integrates the ColPali PDF processing system with the database ingestion pipeline.
+Integrates the ColPali processing system with the database ingestion pipeline.
 """
 
 from dataclasses import dataclass
@@ -25,11 +25,11 @@ class PDFProcessingResult:
     error: Optional[str] = None
 
 
-class PDFProcessor:
-    """Process PDFs downloaded from database ingestion with ColPali.
+class DocumentProcessor:
+    """Process documents (PDFs and images) from database ingestion with ColPali.
 
     Lazy-loads the ColPali model on first use to avoid loading 3B+ parameters
-    at startup when PDF processing may not be needed.
+    at startup when document processing may not be needed.
     """
 
     def __init__(
@@ -194,11 +194,111 @@ class PDFProcessor:
                 error=str(e),
             )
 
+    def process_image(
+        self,
+        file: DetectedFile,
+        local_path: Path,
+    ) -> PDFProcessingResult:
+        """Process a single image file (JPG, PNG, GIF, TIFF) with ColPali.
+
+        Args:
+            file: DetectedFile with metadata
+            local_path: Path to the downloaded image file
+
+        Returns:
+            PDFProcessingResult with processing outcome
+        """
+        self._load_model()
+
+        from backend.ingest import ingest_image
+
+        try:
+            file_bytes = local_path.read_bytes()
+        except Exception as e:
+            self._logger.error(f"Failed to read image file {local_path}: {e}", exc_info=True)
+            return PDFProcessingResult(
+                file=file,
+                success=False,
+                error=f"Failed to read file: {e}",
+            )
+
+        tags, description = self._build_metadata(file)
+        filename = file.filename or local_path.name
+        title = Path(filename).stem if filename else None
+
+        try:
+            success, message, pages_indexed = ingest_image(
+                file_bytes=file_bytes,
+                filename=filename,
+                vespa_app=self._vespa,
+                model=self._model,
+                processor=self._processor,
+                device=self._device,
+                title=title,
+                description=description,
+                tags=tags,
+                batch_size=self._batch_size,
+                s3_key=file.s3_key,
+            )
+
+            if success:
+                self._logger.debug(
+                    f"Indexed image {filename}: {pages_indexed} pages "
+                    f"(source: {file.source_table}:{file.source_record_id})"
+                )
+            else:
+                self._logger.warning(f"Failed to index image {filename}: {message}")
+
+            return PDFProcessingResult(
+                file=file,
+                success=success,
+                pages_indexed=pages_indexed,
+                error=None if success else message,
+            )
+
+        except Exception as e:
+            self._logger.error(f"Error processing image {filename}: {e}", exc_info=True)
+            return PDFProcessingResult(
+                file=file,
+                success=False,
+                error=str(e),
+            )
+
+    def process_file(
+        self,
+        file: DetectedFile,
+        local_path: Path,
+    ) -> PDFProcessingResult:
+        """Process any supported file (PDF or image) with ColPali.
+
+        Dispatches to process_pdf() or process_image() based on file extension.
+
+        Args:
+            file: DetectedFile with metadata
+            local_path: Path to the downloaded file
+
+        Returns:
+            PDFProcessingResult with processing outcome
+        """
+        from backend.ingest import PROCESSABLE_IMAGE_EXTENSIONS
+
+        ext = local_path.suffix.lower()
+        if ext == ".pdf":
+            return self.process_pdf(file, local_path)
+        elif ext in PROCESSABLE_IMAGE_EXTENSIONS:
+            return self.process_image(file, local_path)
+        else:
+            return PDFProcessingResult(
+                file=file,
+                success=False,
+                error=f"Unsupported file type: {ext}",
+            )
+
     def process_batch(
         self,
         files_with_paths: list[tuple[DetectedFile, Path]],
     ) -> list[PDFProcessingResult]:
-        """Process a batch of PDF files.
+        """Process a batch of files (PDFs and images).
 
         Args:
             files_with_paths: List of (DetectedFile, local_path) tuples
@@ -209,18 +309,18 @@ class PDFProcessor:
         if not files_with_paths:
             return []
 
-        self._logger.info(f"Processing batch of {len(files_with_paths)} PDFs...")
+        self._logger.info(f"Processing batch of {len(files_with_paths)} files...")
 
         results = []
         for file, local_path in files_with_paths:
-            result = self.process_pdf(file, local_path)
+            result = self.process_file(file, local_path)
             results.append(result)
 
         successful = sum(1 for r in results if r.success)
         total_pages = sum(r.pages_indexed for r in results)
 
         self._logger.info(
-            f"Batch complete: {successful}/{len(results)} PDFs processed, "
+            f"Batch complete: {successful}/{len(results)} files processed, "
             f"{total_pages} pages indexed"
         )
 

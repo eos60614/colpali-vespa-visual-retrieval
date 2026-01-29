@@ -19,7 +19,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Tuple, Optional
 
 import numpy as np
 import torch
@@ -74,7 +74,7 @@ def get_vespa_client() -> Vespa:
     token_url = os.environ.get("VESPA_APP_TOKEN_URL")
     token = os.environ.get("VESPA_CLOUD_SECRET_TOKEN")
     if token_url and token:
-        print(f"Connecting to Vespa Cloud")
+        print("Connecting to Vespa Cloud")
         return Vespa(url=token_url, vespa_cloud_secret_token=token)
 
     raise ValueError("No Vespa connection configured. Set VESPA_LOCAL_URL or VESPA_APP_TOKEN_URL")

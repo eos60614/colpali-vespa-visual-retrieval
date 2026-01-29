@@ -1,5 +1,4 @@
 import spacy
-import os
 
 # Download the model if it is not already present
 if not spacy.util.is_package("en_core_web_sm"):

@@ -4,23 +4,20 @@ Ingest 5 random records from each table into Vespa.
 """
 
 import asyncio
-import json
 import os
 import sys
-import random
 from pathlib import Path
+
+import aiohttp
 from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from backend.config import get, get_env
-from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
-from backend.ingestion.schema_discovery import SchemaDiscovery
-from backend.ingestion.record_ingester import RecordIngester
-
-# Simple Vespa client using aiohttp
-import aiohttp
+from backend.config import get, get_env  # noqa: E402
+from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection  # noqa: E402
+from backend.ingestion.schema_discovery import SchemaDiscovery  # noqa: E402
+from backend.ingestion.record_ingester import RecordIngester  # noqa: E402
 
 
 class SimpleVespaClient:
@@ -68,7 +65,7 @@ async def main():
     config = ConnectionConfig.from_url(db_url)
     db = DatabaseConnection(config)
 
-    print(f"\nConnecting to database...")
+    print("\nConnecting to database...")
     await db.connect()
     print("  ✓ Database connected")
 

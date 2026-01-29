@@ -9,12 +9,11 @@ from logging import Logger
 from backend.logging_config import get_logger
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 
 import aiohttp
 
 from backend.config import get
-from backend.ingestion.exceptions import DownloadError
 from backend.ingestion.file_detector import DetectedFile
 
 
