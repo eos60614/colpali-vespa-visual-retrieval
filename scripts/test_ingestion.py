@@ -25,9 +25,6 @@ from backend.ingestion.schema_discovery import (
 )
 from backend.ingestion.record_ingester import (
     RecordIngester,
-    IngestedRecord,
-    RelationshipLink,
-    FileReferenceLink,
 )
 
 
@@ -304,7 +301,7 @@ async def test_index_record():
     doc = mock_vespa.documents[0]
     fields = doc["fields"]
 
-    print(f"\n   Indexed document fields:")
+    print("\n   Indexed document fields:")
     print(f"   - doc_id: {fields['doc_id']}")
     print(f"   - source_table: {fields['source_table']}")
     print(f"   - table_description: {fields.get('table_description', 'N/A')}")
@@ -315,7 +312,7 @@ async def test_index_record():
     # Verify relationship JSON structure
     if fields['relationships']:
         rel_json = json.loads(fields['relationships'][0])
-        print(f"\n   Sample relationship JSON:")
+        print("\n   Sample relationship JSON:")
         print(f"   {json.dumps(rel_json, indent=4)}")
         assert "target_doc_id" in rel_json
         assert "direction" in rel_json
@@ -324,7 +321,7 @@ async def test_index_record():
     # Verify file reference JSON structure
     if fields['file_references']:
         file_json = json.loads(fields['file_references'][0])
-        print(f"\n   Sample file_reference JSON:")
+        print("\n   Sample file_reference JSON:")
         print(f"   {json.dumps(file_json, indent=4)}")
         assert "source_column" in file_json
         assert "reference_type" in file_json

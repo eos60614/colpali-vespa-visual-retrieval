@@ -18,9 +18,8 @@ import base64
 import io
 import sys
 from pathlib import Path
-from typing import Generator, List, Tuple
+from typing import List, Tuple
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-import multiprocessing as mp
 
 import numpy as np
 from PIL import Image

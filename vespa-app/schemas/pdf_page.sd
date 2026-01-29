@@ -82,6 +82,9 @@ schema pdf_page {
         field region_bbox type string {
             indexing: summary | attribute
         }
+        field s3_key type string {
+            indexing: summary | attribute
+        }
     }
 
     fieldset default {

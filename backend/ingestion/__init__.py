@@ -51,7 +51,7 @@ from backend.ingestion.sync_manager import (
     IngestionJob,
 )
 from backend.ingestion.pdf_processor import (
-    PDFProcessor,
+    DocumentProcessor,
     PDFProcessingResult,
 )
 
@@ -99,7 +99,7 @@ __all__ = [
     "SyncConfig",
     "SyncResult",
     "IngestionJob",
-    # PDF Processing
-    "PDFProcessor",
+    # Document Processing
+    "DocumentProcessor",
     "PDFProcessingResult",
 ]

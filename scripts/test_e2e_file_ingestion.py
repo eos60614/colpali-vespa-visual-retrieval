@@ -10,7 +10,6 @@ This test:
 5. Verifies the document exists in Vespa with embeddings
 """
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -65,7 +64,7 @@ async def test_e2e_file_ingestion(db_url, vespa_url, s3_config):
     from vespa.application import Vespa
     from backend.ingestion.file_detector import DetectedFile
     from backend.ingestion.file_downloader import FileDownloader, DownloadStrategy
-    from backend.ingestion.pdf_processor import PDFProcessor
+    from backend.ingestion.pdf_processor import DocumentProcessor
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -187,13 +186,13 @@ async def test_e2e_file_ingestion(db_url, vespa_url, s3_config):
         vespa_app = Vespa(url=vespa_url)
         vespa_app.wait_for_application_up()
 
-        pdf_processor = PDFProcessor(
+        doc_processor = DocumentProcessor(
             vespa_app=vespa_app,
             logger=logger,
             batch_size=2,  # Small batch for testing
         )
 
-        process_result = pdf_processor.process_pdf(detected_file, result.local_path)
+        process_result = doc_processor.process_file(detected_file, result.local_path)
 
         if not process_result.success:
             pytest.fail(f"PDF processing failed: {process_result.error}")
@@ -206,8 +205,6 @@ async def test_e2e_file_ingestion(db_url, vespa_url, s3_config):
         # Query for documents with matching source metadata
         # The document ID should contain the filename stem
         from vespa.io import VespaQueryResponse
-
-        filename_stem = Path(detected_file.filename).stem if detected_file.filename else ""
 
         async with vespa_app.asyncio(connections=1) as session:
             response: VespaQueryResponse = await session.query(

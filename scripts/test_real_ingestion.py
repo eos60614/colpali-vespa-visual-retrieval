@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from pathlib import Path
+
 from dotenv import load_dotenv
 
 # Add project root to path
@@ -15,9 +16,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 load_dotenv()
 
-from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
-from backend.ingestion.schema_discovery import SchemaDiscovery
-from backend.ingestion.record_ingester import RecordIngester
+from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection  # noqa: E402
+from backend.ingestion.schema_discovery import SchemaDiscovery  # noqa: E402
+from backend.ingestion.record_ingester import RecordIngester  # noqa: E402
 
 
 class MockVespaApp:
@@ -45,7 +46,7 @@ async def main():
         print("ERROR: PROCORE_DATABASE_URL not set")
         return 1
 
-    print(f"\nConnecting to database...")
+    print("\nConnecting to database...")
 
     # Parse connection config
     config = ConnectionConfig.from_url(db_url)
@@ -77,7 +78,7 @@ async def main():
 
         # Show top 5 tables by row count
         sorted_tables = sorted(schema_map.tables, key=lambda t: t.row_count, reverse=True)
-        print(f"\n  Top 5 tables by row count:")
+        print("\n  Top 5 tables by row count:")
         for t in sorted_tables[:5]:
             file_refs = len(t.file_reference_columns)
             print(f"    - {t.name}: {t.row_count:,} rows" + (f" ({file_refs} file columns)" if file_refs else ""))
@@ -129,7 +130,7 @@ async def main():
                     # Test indexing
                     result = await ingester.index_record(record)
                     if result.success:
-                        print(f"      ✓ Index simulation successful")
+                        print("      ✓ Index simulation successful")
                     else:
                         print(f"      ✗ Index failed: {result.error}")
 
@@ -147,7 +148,7 @@ async def main():
 
             print(f"\n  Schema: {doc['schema']}")
             print(f"  Doc ID: {doc['data_id']}")
-            print(f"\n  Fields:")
+            print("\n  Fields:")
             print(f"    source_table: {fields['source_table']}")
             print(f"    table_description: {fields.get('table_description', 'N/A')}")
             print(f"    relationships: {len(fields['relationships'])} items")
@@ -155,7 +156,7 @@ async def main():
             print(f"    incoming_relationships: {len(fields.get('incoming_relationships', []))} items")
 
             if fields['relationships']:
-                print(f"\n  Sample relationship JSON:")
+                print("\n  Sample relationship JSON:")
                 rel = json.loads(fields['relationships'][0])
                 print(f"    {json.dumps(rel, indent=4)}")
 

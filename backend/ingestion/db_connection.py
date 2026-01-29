@@ -113,7 +113,7 @@ class DatabaseConnection:
 
         try:
             async with self._pool.acquire() as conn:
-                result = await conn.executemany(query, args_list)
+                await conn.executemany(query, args_list)
                 return len(args_list)
         except asyncpg.PostgresError as e:
             raise ConnectionError(f"Batch execution failed: {e}") from e

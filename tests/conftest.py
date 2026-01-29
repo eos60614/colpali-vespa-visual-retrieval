@@ -5,7 +5,7 @@ Shared test fixtures for the colpali-procore test suite.
 import asyncio
 import os
 from pathlib import Path
-from typing import AsyncGenerator, Generator
+from typing import Generator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

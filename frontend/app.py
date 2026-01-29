@@ -15,13 +15,6 @@ from fasthtml.components import (
     P,
     Hr,
     Span,
-    A,
-    Script,
-    Button,
-    Label,
-    RadioGroup,
-    RadioGroupItem,
-    Separator,
     Ul,
     Li,
     Strong,
@@ -673,7 +666,18 @@ def SearchResult(
                                 target="_blank",
                                 cls="flex items-center gap-1.5 font-mono bold text-sm",
                             ),
-                            cls="flex items-center justify-end",
+                            *(
+                                [A(
+                                    Lucide(icon="download", size="18"),
+                                    "Download Original PDF",
+                                    href=f"/download_pdf?doc_id={doc_id}",
+                                    target="_blank",
+                                    cls="flex items-center gap-1.5 font-mono bold text-sm hover:underline",
+                                )]
+                                if fields.get("s3_key")
+                                else []
+                            ),
+                            cls="flex items-center justify-end gap-4",
                         ),
                         Div(
                             Div(

@@ -17,7 +17,7 @@ from typing import Any, Optional, TYPE_CHECKING
 import httpx
 
 if TYPE_CHECKING:
-    from backend.ingestion.pdf_processor import PDFProcessor
+    from backend.ingestion.pdf_processor import DocumentProcessor
 
 from backend.config import get
 from backend.ingestion.change_detector import ChangeDetector
@@ -27,6 +27,9 @@ from backend.ingestion.file_detector import FileDetector
 from backend.ingestion.file_downloader import DownloadStrategy, FileDownloader
 from backend.ingestion.record_ingester import RecordIngester
 from backend.ingestion.schema_discovery import SchemaMap
+
+# File extensions that DocumentProcessor can embed with ColPali
+_PROCESSABLE_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".gif", ".tiff", ".tif"}
 
 
 @dataclass
@@ -62,12 +65,14 @@ class SyncConfig:
     tables: Optional[list[str]] = None  # None = all tables
     exclude_tables: list[str] = field(default_factory=list)
     batch_size: int = None
+    max_per_table: Optional[int] = None  # Limit records per table (for testing)
     download_files: bool = False
     file_workers: int = None
     download_dir: Optional[Path] = None
     process_pdfs: bool = False  # Process downloaded PDFs with ColPali
     detect_deletes: bool = False  # Detect and remove deleted records
     delete_detection_interval: int = None
+    tables_per_cycle: Optional[int] = None  # Limit tables processed per daemon cycle (None = all)
 
     def __post_init__(self):
         if self.batch_size is None:
@@ -113,7 +118,7 @@ class SyncManager:
         schema_map: SchemaMap,
         checkpoint_store: CheckpointStore,
         logger: Optional[logging.Logger] = None,
-        pdf_processor: Optional["PDFProcessor"] = None,
+        pdf_processor: Optional["DocumentProcessor"] = None,
     ):
         """Initialize sync manager.
 
@@ -180,6 +185,40 @@ class SyncManager:
 
         return filtered_tables
 
+    async def get_unsynced_tables(self, config: SyncConfig) -> list[str]:
+        """Get tables that have never been fully synced.
+
+        Args:
+            config: Sync configuration
+
+        Returns:
+            List of table names that have no checkpoint or failed status
+        """
+        all_tables = self.get_tables_to_sync(config)
+        unsynced = []
+        for table in all_tables:
+            last_sync = await self._checkpoint_store.get_last_sync_time(table)
+            if last_sync is None:
+                unsynced.append(table)
+        return unsynced
+
+    async def get_synced_tables(self, config: SyncConfig) -> list[str]:
+        """Get tables that have been successfully synced at least once.
+
+        Args:
+            config: Sync configuration
+
+        Returns:
+            List of table names with a COMPLETED checkpoint
+        """
+        all_tables = self.get_tables_to_sync(config)
+        synced = []
+        for table in all_tables:
+            last_sync = await self._checkpoint_store.get_last_sync_time(table)
+            if last_sync is not None:
+                synced.append(table)
+        return synced
+
     async def run_full_sync(self, config: SyncConfig) -> SyncResult:
         """Run full ingestion of all data.
 
@@ -240,6 +279,13 @@ class SyncManager:
                     "AWS_REGION": os.environ.get("AWS_REGION", get("ingestion", "files", "s3_default_region")),
                     "S3_BUCKET": os.environ.get("S3_BUCKET", get("ingestion", "files", "s3_default_bucket")),
                 }
+                missing = [k for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "S3_BUCKET")
+                           if not aws_config.get(k)]
+                if missing:
+                    raise ValueError(
+                        f"File download requires AWS credentials. "
+                        f"Missing environment variables: {', '.join(missing)}"
+                    )
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
                     strategy=DownloadStrategy.DIRECT_S3,
@@ -256,7 +302,6 @@ class SyncManager:
                 table_processed = 0
                 table_failed = 0
                 table_files_downloaded = 0
-                table_files_failed = 0
                 table_pdfs_processed = 0
                 table_pdfs_failed = 0
                 table_pdf_pages = 0
@@ -265,6 +310,7 @@ class SyncManager:
                     async for result in ingester.ingest_table(
                         table=table,
                         batch_size=config.batch_size,
+                        max_per_table=config.max_per_table,
                     ):
                         if result.success:
                             table_processed += 1
@@ -286,9 +332,9 @@ class SyncManager:
                             batch_size=config.batch_size,
                             workers=config.file_workers,
                             process_pdfs=config.process_pdfs and self._pdf_processor is not None,
+                            max_per_table=config.max_per_table,
                         )
                         table_files_downloaded = dl_count
-                        table_files_failed = dl_failed
                         table_pdfs_processed = pdf_count
                         table_pdfs_failed = pdf_fail
                         table_pdf_pages = pdf_pages
@@ -439,6 +485,13 @@ class SyncManager:
                     "AWS_REGION": os.environ.get("AWS_REGION", get("ingestion", "files", "s3_default_region")),
                     "S3_BUCKET": os.environ.get("S3_BUCKET", get("ingestion", "files", "s3_default_bucket")),
                 }
+                missing = [k for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "S3_BUCKET")
+                           if not aws_config.get(k)]
+                if missing:
+                    raise ValueError(
+                        f"File download requires AWS credentials. "
+                        f"Missing environment variables: {', '.join(missing)}"
+                    )
                 file_downloader = FileDownloader(
                     download_dir=download_dir,
                     strategy=DownloadStrategy.DIRECT_S3,
@@ -450,11 +503,22 @@ class SyncManager:
 
             for table in tables:
                 last_sync = await self._checkpoint_store.get_last_sync_time(table)
+                ts_col = self._get_timestamp_column(table)
+                has_timestamps = ts_col is not None
 
-                self._logger.info(
-                    f"Syncing table: {table} "
-                    f"(since: {last_sync or 'never'})"
-                )
+                # Tables without timestamps always do full scan
+                effective_since = last_sync if has_timestamps else None
+
+                if not has_timestamps:
+                    self._logger.info(
+                        f"Syncing table: {table} "
+                        f"(no timestamp column — full scan)"
+                    )
+                else:
+                    self._logger.info(
+                        f"Syncing table: {table} "
+                        f"(since: {last_sync or 'never'})"
+                    )
 
                 table_processed = 0
                 table_failed = 0
@@ -469,7 +533,7 @@ class SyncManager:
 
                 try:
                     # Step 1: Detect changes to categorize inserts vs updates
-                    changeset = await change_detector.detect_changes(table, since=last_sync)
+                    changeset = await change_detector.detect_changes(table, since=effective_since)
 
                     # Step 2: Pre-fetch old file references for updates BEFORE overwriting
                     old_file_refs: dict[str, list[dict]] = {}
@@ -479,10 +543,11 @@ class SyncManager:
                             old_file_refs[doc_id] = await self._fetch_existing_file_references(doc_id)
 
                     # Step 3: Ingest all changed records (inserts + updates)
+                    # Tables without timestamps do full scan (since=None falls through in ingester)
                     async for result in ingester.ingest_table(
                         table=table,
                         batch_size=config.batch_size,
-                        since=last_sync,
+                        since=effective_since,
                     ):
                         if result.success:
                             table_processed += 1
@@ -569,7 +634,7 @@ class SyncManager:
                                         config.process_pdfs
                                         and self._pdf_processor
                                         and dl_result.local_path
-                                        and dl_result.local_path.suffix.lower() == ".pdf"
+                                        and dl_result.local_path.suffix.lower() in _PROCESSABLE_EXTENSIONS
                                     ):
                                         detected_file = file_lookup.get(dl_result.s3_key)
                                         if detected_file:
@@ -582,9 +647,9 @@ class SyncManager:
                                         f"Failed to download {dl_result.s3_key}: {dl_result.error}"
                                     )
 
-                            # Process PDFs with ColPali if enabled
+                            # Process documents (PDFs + images) with ColPali if enabled
                             if config.process_pdfs and downloaded_pdfs and self._pdf_processor:
-                                self._logger.info(f"Processing {len(downloaded_pdfs)} PDFs from {table}")
+                                self._logger.info(f"Processing {len(downloaded_pdfs)} files from {table}")
                                 results = self._pdf_processor.process_batch(downloaded_pdfs)
                                 for pdf_result in results:
                                     if pdf_result.success:
@@ -607,7 +672,14 @@ class SyncManager:
                             )
 
                     # Step 6: Delete detection
-                    if should_detect_deletes:
+                    # Always run for tables without timestamps (only way to detect removals)
+                    run_deletes_for_table = should_detect_deletes or not has_timestamps
+                    if run_deletes_for_table:
+                        if not has_timestamps:
+                            self._logger.info(
+                                f"Running delete detection for {table} "
+                                f"(no timestamps — ID comparison required)"
+                            )
                         vespa_ids = await self._get_vespa_record_ids(table)
                         if vespa_ids:
                             deleted_ids = await change_detector.detect_deletes(table, vespa_ids)
@@ -1074,6 +1146,7 @@ class SyncManager:
         workers: int = 2,
         since: Optional[datetime] = None,
         process_pdfs: bool = False,
+        max_per_table: Optional[int] = None,
     ) -> tuple[int, int, int, int, int]:
         """Download files referenced in a table and optionally process PDFs.
 
@@ -1085,6 +1158,7 @@ class SyncManager:
             workers: Parallel download workers
             since: Only process records updated since this time
             process_pdfs: If True and pdf_processor is set, process downloaded PDFs
+            max_per_table: Maximum number of records to scan for files
 
         Returns:
             Tuple of (files_downloaded, files_failed, pdfs_processed, pdfs_failed, pdf_pages_indexed)
@@ -1099,16 +1173,21 @@ class SyncManager:
         if since:
             ts_col = self._get_timestamp_column(table)
             if ts_col is None:
-                self._logger.warning(
-                    f"Table {table} has no recognized timestamp column, "
-                    f"skipping incremental file download"
+                self._logger.info(
+                    f"Table {table} has no timestamp column — "
+                    f"scanning all records for file references"
                 )
-                return 0, 0, 0, 0, 0
-            query = f'SELECT * FROM "{table}" WHERE "{ts_col}" > $1'
-            args = (since,)
+                query = f'SELECT * FROM "{table}"'
+                args = ()
+            else:
+                query = f'SELECT * FROM "{table}" WHERE "{ts_col}" > $1'
+                args = (since,)
         else:
             query = f'SELECT * FROM "{table}"'
             args = ()
+
+        if max_per_table is not None:
+            query += f" LIMIT {int(max_per_table)}"
 
         # Collect all files from records
         all_files = []
@@ -1134,10 +1213,10 @@ class SyncManager:
                 files_downloaded += 1
                 self._logger.debug(f"Downloaded: {result.s3_key}")
 
-                # Track PDFs for processing
+                # Track processable files (PDFs + images) for ColPali
                 if process_pdfs and result.local_path:
                     file_ext = result.local_path.suffix.lower()
-                    if file_ext == ".pdf":
+                    if file_ext in _PROCESSABLE_EXTENSIONS:
                         detected_file = file_lookup.get(result.s3_key)
                         if detected_file:
                             downloaded_pdfs.append((detected_file, result.local_path))
@@ -1147,9 +1226,9 @@ class SyncManager:
                 files_failed += 1
                 self._logger.warning(f"Failed to download {result.s3_key}: {result.error}")
 
-        # Process PDFs with ColPali if enabled
+        # Process documents (PDFs + images) with ColPali if enabled
         if process_pdfs and downloaded_pdfs and self._pdf_processor:
-            self._logger.info(f"Processing {len(downloaded_pdfs)} PDFs from {table}")
+            self._logger.info(f"Processing {len(downloaded_pdfs)} files from {table}")
             results = self._pdf_processor.process_batch(downloaded_pdfs)
 
             for pdf_result in results:

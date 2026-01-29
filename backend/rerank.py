@@ -204,9 +204,6 @@ def rerank_with_processor(
     Returns:
         Tuple of (reranked results, query embeddings)
     """
-    # Generate query embeddings using the processor
-    inputs = processor.process_queries([query])
-
     # The processor output contains input_ids which can be used for tokenization
     # but we need the model to generate actual embeddings
     # This function assumes embeddings are passed separately

@@ -1,5 +1,5 @@
 """
-Ingestion module for processing single PDF files.
+Ingestion module for processing PDFs and images with ColPali embeddings.
 Extracts core functionality from scripts/feed_data.py for on-demand upload processing.
 """
 
@@ -219,6 +219,7 @@ def ingest_pdf(
     use_vlm_detection: bool = False,
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
+    s3_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -349,6 +350,7 @@ def ingest_pdf(
                             "region_label": region_meta.label if not is_full_page else "",
                             "region_type": region_meta.region_type,
                             "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                            "s3_key": s3_key or "",
                         },
                     }
 
@@ -394,6 +396,7 @@ def ingest_pdf(
                         "region_label": "",
                         "region_type": "full_page",
                         "region_bbox": "",
+                        "s3_key": s3_key or "",
                     },
                 }
 
@@ -411,3 +414,127 @@ def ingest_pdf(
         return True, f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.", docs_indexed
     else:
         return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed
+
+
+# Processable image extensions (ColPali accepts any PIL-compatible image)
+PROCESSABLE_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".tiff", ".tif"}
+PROCESSABLE_EXTENSIONS = {".pdf"} | PROCESSABLE_IMAGE_EXTENSIONS
+
+
+def validate_image(file_bytes: bytes) -> Tuple[bool, str]:
+    """
+    Validate an image file for integrity.
+
+    Returns:
+        Tuple of (is_valid, message)
+    """
+    try:
+        img = Image.open(io.BytesIO(file_bytes))
+        img.verify()
+        return True, f"Valid {img.format} image ({img.size[0]}x{img.size[1]})"
+    except Exception as e:
+        return False, f"Invalid image: {str(e)}"
+
+
+def ingest_image(
+    file_bytes: bytes,
+    filename: str,
+    vespa_app: Vespa,
+    model,
+    processor,
+    device: str,
+    title: Optional[str] = None,
+    description: str = "",
+    tags: Optional[List[str]] = None,
+    batch_size: int = None,
+    s3_key: Optional[str] = None,
+) -> Tuple[bool, str, int]:
+    """
+    Ingest a single image file (JPG, PNG, GIF, TIFF) with ColPali embeddings.
+
+    Opens the image with PIL, generates multi-vector embeddings via ColQwen2.5,
+    and feeds the document to Vespa using the same pdf_page schema.
+
+    Args:
+        file_bytes: Raw image bytes
+        filename: Original filename
+        vespa_app: Vespa application instance
+        model: ColPali model
+        processor: ColPali processor
+        device: Device string (cuda/cpu)
+        title: Optional custom title (defaults to filename without extension)
+        description: Optional description
+        tags: Optional list of tags
+        batch_size: Batch size for embedding generation
+        s3_key: Optional S3 key for original file reference
+
+    Returns:
+        Tuple of (success, message, pages_indexed)
+    """
+    if title is None or title.strip() == "":
+        title = Path(filename).stem
+    if tags is None:
+        tags = []
+    if batch_size is None:
+        batch_size = get("ingestion", "batch_size")
+
+    snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
+
+    # Step 1: Validate image
+    is_valid, validation_msg = validate_image(file_bytes)
+    if not is_valid:
+        return False, validation_msg, 0
+
+    # Step 2: Open image as PIL
+    try:
+        image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    except Exception as e:
+        return False, f"Error opening image: {str(e)}", 0
+
+    # Step 3: Generate document ID
+    base_doc_id = generate_doc_id(file_bytes, title)
+    doc_id = f"{base_doc_id}_page_1"
+
+    # Step 4: Generate embeddings
+    try:
+        embeddings = generate_embeddings(model, processor, [image], device, batch_size)
+        bin_emb, float_emb = embeddings[0]
+    except Exception as e:
+        return False, f"Embedding generation failed: {str(e)}", 0
+
+    # Step 5: Build and feed Vespa document
+    snippet = filename
+    if len(snippet) > snippet_ingest_length:
+        snippet = snippet[:snippet_ingest_length] + "..."
+
+    vespa_doc = {
+        "id": doc_id,
+        "fields": {
+            "id": doc_id,
+            "url": filename,
+            "title": title,
+            "page_number": 1,
+            "text": "",
+            "snippet": snippet,
+            "description": description,
+            "tags": tags,
+            "blur_image": create_blur_image(image),
+            "full_image": image_to_base64(image),
+            "embedding": bin_emb,
+            "embedding_float": float_emb,
+            "questions": [],
+            "queries": [],
+            "is_region": False,
+            "parent_doc_id": "",
+            "region_label": "",
+            "region_type": "full_page",
+            "region_bbox": "",
+            "s3_key": s3_key or "",
+        },
+    }
+
+    _, success, error = feed_document(vespa_app, vespa_doc)
+    if success:
+        return True, f"Successfully indexed image {filename}.", 1
+    else:
+        return False, f"Failed to feed image to Vespa: {error}", 0

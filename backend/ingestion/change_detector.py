@@ -101,9 +101,9 @@ class ChangeDetector:
         ts_column = self.get_timestamp_column(table)
 
         if ts_column is None:
-            self._logger.warning(
-                f"Table {table} has no recognized timestamp column, "
-                f"skipping change detection"
+            self._logger.info(
+                f"Table {table} has no timestamp column — "
+                f"change detection skipped, full resync will be used"
             )
             return ChangeSet(
                 table=table, since=since, until=until,
@@ -162,9 +162,9 @@ class ChangeDetector:
         ts_column = self.get_timestamp_column(table)
 
         if ts_column is None:
-            self._logger.warning(
-                f"Table {table} has no recognized timestamp column, "
-                f"skipping incremental change detection"
+            self._logger.debug(
+                f"Table {table} has no timestamp column — "
+                f"no incremental records to stream"
             )
             return
 

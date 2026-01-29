@@ -157,6 +157,14 @@ Examples:
         help="Disable PDF processing with ColPali",
     )
 
+    # Progressive sync
+    parser.add_argument(
+        "--tables-per-cycle",
+        type=int,
+        default=None,
+        help="Max tables to full-sync per daemon cycle during initial ingestion (default: all)",
+    )
+
     # Delete detection
     parser.add_argument(
         "--detect-deletes",
@@ -238,22 +246,68 @@ class SyncDaemon:
         self._logger.info("Daemon stopped")
 
     async def _run_sync_cycle(self):
-        """Run a single sync cycle."""
+        """Run a single sync cycle with progressive two-phase logic.
+
+        Phase 1 (Initial Full Sync): Process unsynced tables N at a time.
+        Phase 2 (Change Detection): Once all tables synced, do incremental only.
+        """
         self._cycle_count += 1
         self._logger.info(f"Starting sync cycle #{self._cycle_count}...")
         start_time = datetime.now(timezone.utc)
 
-        # Determine if delete detection should run this cycle
-        run_deletes = False
-        if self._sync_config.detect_deletes:
-            interval = self._sync_config.delete_detection_interval
-            if interval == 0 or (self._cycle_count % interval == 0):
-                run_deletes = True
-                self._logger.info("Delete detection enabled for this cycle")
+        # Check which tables still need initial full sync
+        unsynced = await self._sync_manager.get_unsynced_tables(self._sync_config)
+        all_tables = self._sync_manager.get_tables_to_sync(self._sync_config)
 
-        result = await self._sync_manager.run_incremental_sync(
-            self._sync_config, run_delete_detection=run_deletes,
-        )
+        if unsynced:
+            # Phase 1: Full sync of unsynced tables
+            tables_per_cycle = self._sync_config.tables_per_cycle or len(unsynced)
+            batch = unsynced[:tables_per_cycle]
+
+            self._logger.info(
+                f"Phase 1: Full sync {len(batch)}/{len(unsynced)} unsynced tables "
+                f"({len(all_tables) - len(unsynced)}/{len(all_tables)} already synced)"
+            )
+
+            # Create a config scoped to just the batch of unsynced tables
+            batch_config = SyncConfig(
+                tables=batch,
+                exclude_tables=self._sync_config.exclude_tables,
+                batch_size=self._sync_config.batch_size,
+                max_per_table=self._sync_config.max_per_table,
+                download_files=self._sync_config.download_files,
+                file_workers=self._sync_config.file_workers,
+                process_pdfs=self._sync_config.process_pdfs,
+                detect_deletes=False,  # No delete detection during initial full sync
+            )
+
+            result = await self._sync_manager.run_full_sync(batch_config)
+
+            remaining = len(unsynced) - len(batch)
+            phase_msg = f"Phase 1 (full sync): {len(batch)} tables"
+            if remaining > 0:
+                phase_msg += f" — {remaining} tables remaining"
+            else:
+                phase_msg += " — initial sync COMPLETE, switching to change detection"
+        else:
+            # Phase 2: Incremental sync of all tables
+            self._logger.info(
+                f"Phase 2: Incremental sync of {len(all_tables)} tables "
+                f"(all tables fully synced)"
+            )
+
+            # Determine if delete detection should run this cycle
+            run_deletes = False
+            if self._sync_config.detect_deletes:
+                interval = self._sync_config.delete_detection_interval
+                if interval == 0 or (self._cycle_count % interval == 0):
+                    run_deletes = True
+                    self._logger.info("Delete detection enabled for this cycle")
+
+            result = await self._sync_manager.run_incremental_sync(
+                self._sync_config, run_delete_detection=run_deletes,
+            )
+            phase_msg = "Phase 2 (incremental)"
 
         duration = datetime.now(timezone.utc) - start_time
 
@@ -271,8 +325,8 @@ class SyncDaemon:
             stats.append(f"{result.pdfs_processed} PDFs ({result.pdf_pages_indexed} pages)")
 
         self._logger.info(
-            f"Sync cycle #{self._cycle_count} completed: {', '.join(stats)} "
-            f"in {duration.total_seconds():.1f}s"
+            f"Sync cycle #{self._cycle_count} [{phase_msg}]: "
+            f"{', '.join(stats)} in {duration.total_seconds():.1f}s"
         )
 
         return result
@@ -402,12 +456,12 @@ async def main() -> int:
             vespa_app.wait_for_application_up(max_wait=60)
             logger.info("Connected to Vespa")
 
-            # Initialize PDF processor if enabled
+            # Initialize document processor if enabled
             pdf_processor = None
             if args.process_pdfs:
-                from backend.ingestion.pdf_processor import PDFProcessor
-                logger.info("Initializing PDF processor (model loads on first PDF)...")
-                pdf_processor = PDFProcessor(
+                from backend.ingestion.pdf_processor import DocumentProcessor
+                logger.info("Initializing document processor (model loads on first file)...")
+                pdf_processor = DocumentProcessor(
                     vespa_app=vespa_app,
                     logger=logger,
                 )
@@ -422,6 +476,11 @@ async def main() -> int:
                 pdf_processor=pdf_processor,
             )
 
+            # Index schema metadata for agent navigation
+            logger.info("Indexing schema metadata into Vespa...")
+            metadata_count = await sync_manager.index_schema_metadata()
+            logger.info(f"Indexed {metadata_count} schema metadata documents")
+
             # Build sync config
             sync_config = SyncConfig(
                 tables=args.tables,
@@ -432,6 +491,7 @@ async def main() -> int:
                 process_pdfs=args.process_pdfs,
                 detect_deletes=args.detect_deletes,
                 delete_detection_interval=args.delete_interval,
+                tables_per_cycle=args.tables_per_cycle,
             )
 
             if args.daemon:
@@ -447,11 +507,35 @@ async def main() -> int:
                 return 0
 
             elif args.once:
-                # Run single sync cycle
-                result = await sync_manager.run_incremental_sync(
-                    sync_config,
-                    run_delete_detection=args.detect_deletes,
-                )
+                # Run single sync cycle with progressive logic
+                unsynced = await sync_manager.get_unsynced_tables(sync_config)
+
+                if unsynced:
+                    # Phase 1: Full sync of unsynced tables
+                    tables_per = sync_config.tables_per_cycle or len(unsynced)
+                    batch = unsynced[:tables_per]
+                    logger.info(
+                        f"Phase 1: Full sync of {len(batch)}/{len(unsynced)} "
+                        f"unsynced tables"
+                    )
+                    batch_config = SyncConfig(
+                        tables=batch,
+                        exclude_tables=sync_config.exclude_tables,
+                        batch_size=sync_config.batch_size,
+                        max_per_table=sync_config.max_per_table,
+                        download_files=sync_config.download_files,
+                        file_workers=sync_config.file_workers,
+                        process_pdfs=sync_config.process_pdfs,
+                        detect_deletes=False,
+                    )
+                    result = await sync_manager.run_full_sync(batch_config)
+                else:
+                    # Phase 2: Incremental sync of all tables
+                    logger.info("Phase 2: All tables synced — running incremental")
+                    result = await sync_manager.run_incremental_sync(
+                        sync_config,
+                        run_delete_detection=args.detect_deletes,
+                    )
 
                 logger.info("=" * 60)
                 logger.info(f"Sync completed: {result.status}")

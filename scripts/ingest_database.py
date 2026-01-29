@@ -16,7 +16,6 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tqdm import tqdm
 
 from backend.config import get, get_env
 from backend.ingestion.checkpoint import CheckpointStore
@@ -114,6 +113,12 @@ Examples:
         type=int,
         default=10000,
         help="Records per batch (default: 10000)",
+    )
+    parser.add_argument(
+        "--max-per-table",
+        type=int,
+        default=None,
+        help="Maximum records to ingest per table (for testing; default: no limit)",
     )
     parser.add_argument(
         "--workers",
@@ -246,12 +251,12 @@ async def main() -> int:
                 vespa_app.wait_for_application_up(max_wait=60)
                 logger.info("Connected to Vespa")
 
-            # Initialize PDF processor if enabled
+            # Initialize document processor if enabled
             pdf_processor = None
             if args.process_pdfs and not args.dry_run:
-                from backend.ingestion.pdf_processor import PDFProcessor
-                logger.info("Initializing PDF processor (model loads on first PDF)...")
-                pdf_processor = PDFProcessor(
+                from backend.ingestion.pdf_processor import DocumentProcessor
+                logger.info("Initializing document processor (model loads on first file)...")
+                pdf_processor = DocumentProcessor(
                     vespa_app=vespa_app,
                     logger=logger,
                 )
@@ -266,11 +271,18 @@ async def main() -> int:
                 pdf_processor=pdf_processor,
             )
 
+            # Index schema metadata for agent navigation
+            if not args.dry_run:
+                logger.info("Indexing schema metadata into Vespa...")
+                metadata_count = await sync_manager.index_schema_metadata()
+                logger.info(f"Indexed {metadata_count} schema metadata documents")
+
             # Build sync config
             sync_config = SyncConfig(
                 tables=args.tables,
                 exclude_tables=args.exclude,
                 batch_size=args.batch_size,
+                max_per_table=args.max_per_table,
                 download_files=args.download_files,
                 file_workers=args.file_workers,
                 process_pdfs=args.process_pdfs,

@@ -3,7 +3,7 @@ Record extraction, transformation, and Vespa indexing.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from logging import Logger
 
 from backend.logging_config import get_logger
@@ -12,7 +12,7 @@ from typing import Any, AsyncIterator, Optional
 
 from backend.config import get
 from backend.ingestion.db_connection import DatabaseConnection
-from backend.ingestion.exceptions import IndexError, TransformError
+from backend.ingestion.exceptions import TransformError
 from backend.ingestion.schema_discovery import FileReferenceType, SchemaMap
 
 
@@ -293,6 +293,7 @@ class RecordIngester:
         table: str,
         batch_size: int = None,
         since: Optional[datetime] = None,
+        max_per_table: Optional[int] = None,
     ) -> AsyncIterator[IngestionResult]:
         """Ingest records from a table.
 
@@ -300,6 +301,7 @@ class RecordIngester:
             table: Table name to ingest
             batch_size: Number of records per batch
             since: Only ingest records updated since this timestamp
+            max_per_table: Maximum number of records to ingest from this table
 
         Yields:
             IngestionResult for each processed record
@@ -311,20 +313,25 @@ class RecordIngester:
         if since:
             ts_col = self._get_timestamp_column(table)
             if ts_col is None:
-                self._logger.warning(
-                    f"Table {table} has no recognized timestamp column, "
-                    f"cannot do incremental ingest — skipping"
+                self._logger.info(
+                    f"Table {table} has no timestamp column — "
+                    f"doing full table scan instead of incremental"
                 )
-                return
-            query = f"""
-                SELECT * FROM "{table}"
-                WHERE "{ts_col}" > $1
-                ORDER BY "{ts_col}" ASC
-            """
-            args = (since,)
+                query = f'SELECT * FROM "{table}" ORDER BY id'
+                args = ()
+            else:
+                query = f"""
+                    SELECT * FROM "{table}"
+                    WHERE "{ts_col}" > $1
+                    ORDER BY "{ts_col}" ASC
+                """
+                args = (since,)
         else:
             query = f'SELECT * FROM "{table}" ORDER BY id'
             args = ()
+
+        if max_per_table is not None:
+            query += f" LIMIT {int(max_per_table)}"
 
         self._logger.info(f"Ingesting table: {table}")
 
