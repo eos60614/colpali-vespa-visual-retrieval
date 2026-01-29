@@ -1,5 +1,7 @@
 # Tasks: Add ColQwen3 Model Support
 
+> **Note**: These tasks were written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). All tasks are completed.
+
 **Input**: Design documents from `/specs/001-colqwen3-model/`
 **Prerequisites**: plan.md ✓, spec.md ✓, research.md ✓, data-model.md ✓, contracts/api.md ✓, quickstart.md ✓
 
@@ -71,7 +73,7 @@
 ### Implementation for User Story 2
 
 - [X] T017 [US2] Preserve model selection in form state after search submission in frontend/app.py
-- [X] T018 [US2] Pass model value through HTMX request/response cycle in frontend/app.py
+- [X] T018 [US2] Pass model value through request/response cycle (now via JSON API)
 - [X] T019 [US2] Set default model selection to colpali on page load/refresh in frontend/app.py
 
 **Checkpoint**: User Story 2 complete - model selection persists during session

@@ -23,21 +23,34 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip } from "@/components/ui/tooltip";
 import { getFullImage } from "@/lib/api-client";
+import { SimilarityMapViewer } from "./similarity-map-viewer";
 import {
   CATEGORY_LABELS,
   CATEGORY_COLORS,
   type SearchResult,
   type DocumentMetadata,
+  type TokenInfo,
 } from "@/types";
 
 interface DocumentViewerProps {
   result: SearchResult | null;
   onClose: () => void;
   onOpenRelated?: (docId: string) => void;
+  queryId?: string | null;
+  resultIndex?: number;
+  tokenMap?: TokenInfo[];
 }
 
-export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewerProps) {
-  const [activeTab, setActiveTab] = useState<"details" | "metadata" | "related">("details");
+export function DocumentViewer({
+  result,
+  onClose,
+  onOpenRelated,
+  queryId,
+  resultIndex = 0,
+  tokenMap = [],
+}: DocumentViewerProps) {
+  const [activeTab, setActiveTab] = useState<"details" | "similarity" | "metadata" | "related">("details");
+  const hasSimMaps = !!queryId && tokenMap.length > 0;
   type ImgState = { image: string | null; loading: boolean };
   type ImgAction = { type: "loading" } | { type: "loaded"; image: string | null };
   const [imgState, dispatchImg] = useReducer(
@@ -172,10 +185,10 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
           <div className="w-96 border-l border-[var(--border-primary)] bg-[var(--bg-primary)] flex flex-col">
             {/* Tabs */}
             <div className="flex border-b border-[var(--border-primary)] px-2 shrink-0">
-              {(["details", "metadata", "related"] as const).map((tab) => (
+              {(["details", ...(hasSimMaps ? ["similarity"] : []), "metadata", "related"] as const).map((tab) => (
                 <button
                   key={tab}
-                  onClick={() => setActiveTab(tab)}
+                  onClick={() => setActiveTab(tab as typeof activeTab)}
                   className={cn(
                     "px-3 py-2.5 text-xs font-medium capitalize transition-all cursor-pointer",
                     "border-b-2 -mb-px",
@@ -184,7 +197,7 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
                       : "border-transparent text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
                   )}
                 >
-                  {tab}
+                  {tab === "similarity" ? "Sim Maps" : tab}
                 </button>
               ))}
             </div>
@@ -193,6 +206,14 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
             <div className="flex-1 overflow-y-auto p-4">
               {activeTab === "details" && (
                 <DetailsTab result={result} metadata={metadata} />
+              )}
+              {activeTab === "similarity" && hasSimMaps && (
+                <SimilarityMapViewer
+                  queryId={queryId}
+                  resultIndex={resultIndex}
+                  tokenMap={tokenMap}
+                  originalImage={fullImage || result.blurImage}
+                />
               )}
               {activeTab === "metadata" && (
                 <MetadataTab result={result} metadata={metadata} />

@@ -1,5 +1,7 @@
 # Tasks: File Upload and Ingestion with Metadata
 
+> **Note**: These tasks were written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). All tasks are completed.
+
 **Input**: Design documents from `/specs/002-file-upload-ingest/`
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, contracts/
 
@@ -103,7 +105,7 @@ Based on plan.md, this is a web application with:
 
 - [X] T032 Validate complete flow per quickstart.md (upload PDF, add metadata, search)
 - [X] T033 Add error logging for upload failures in main.py
-- [X] T034 Add HTMX attributes to UploadForm for seamless submit without page reload in frontend/app.py
+- [X] T034 Add async form submission for seamless upload without page reload (now handled by Next.js)
 
 ---
 
@@ -194,4 +196,4 @@ Task: "Update ingest_pdf() to apply metadata"
 - No automated tests - manual testing per spec
 - Vespa redeployment required after schema changes (T003)
 - Existing functions in scripts/feed_data.py should be extracted, not duplicated
-- HTMX handles form submission without page reload
+- Next.js handles form submission without page reload

@@ -160,3 +160,51 @@ export interface RecentDocument {
   pageNumber: number;
   accessedAt: string;
 }
+
+// ============================================================
+// Visual Search Types
+// ============================================================
+
+export interface VisualSearchResult {
+  id: string;
+  title: string;
+  pageNumber: number;
+  snippet: string;
+  text?: string;
+  blurImage?: string;
+  relevance: number;
+  url?: string;
+  hasOriginalPdf: boolean;
+  selected?: boolean;
+}
+
+export interface VisualSearchResponse {
+  results: VisualSearchResult[];
+  query: string;
+  queryId: string;
+  docIds: string[];
+  ranking: string;
+  durationMs: number;
+  totalCount: number;
+  tokenMap: TokenInfo[];
+}
+
+export interface TokenInfo {
+  token: string;
+  tokenIdx: number;
+}
+
+export interface SimilarityMapState {
+  queryId: string;
+  resultIndex: number;
+  tokenIdx: number;
+  ready: boolean;
+  image?: string;
+  loading: boolean;
+}
+
+export interface SynthesisState {
+  isStreaming: boolean;
+  text: string;
+  error?: string;
+}

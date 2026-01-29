@@ -282,7 +282,7 @@ LIMIT {batch_size};
 - High-performance async driver
 - Native support for JSONB
 - Connection pooling built-in
-- Matches async patterns in existing codebase (FastHTML, aiohttp)
+- Matches async patterns in existing codebase (Starlette, aiohttp)
 
 **Alternatives Considered**:
 - psycopg2: Synchronous only, would require threading

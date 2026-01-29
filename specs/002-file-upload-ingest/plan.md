@@ -1,5 +1,7 @@
 # Implementation Plan: File Upload and Ingestion with Metadata
 
+> **Note**: This spec was written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). The upload feature implementation is complete and still valid.
+
 **Branch**: `002-file-upload-ingest` | **Date**: 2026-01-14 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/002-file-upload-ingest/spec.md`
 
@@ -10,11 +12,11 @@ Add a file upload interface to the frontend that allows users to upload PDF docu
 ## Technical Context
 
 **Language/Version**: Python 3.12
-**Primary Dependencies**: FastHTML, HTMX, PyMuPDF (fitz), ColPali, Vespa Python client
+**Primary Dependencies**: Starlette, PyMuPDF (fitz), ColPali, Vespa Python client
 **Storage**: Vespa (document store), filesystem (temporary upload storage)
 **Testing**: Manual testing (no existing test framework in project)
 **Target Platform**: Linux server (local Vespa deployment)
-**Project Type**: Web application (frontend + backend in same FastHTML app)
+**Project Type**: Web application (Starlette backend + Next.js frontend)
 **Performance Goals**: N/A (functional correctness over optimization)
 **Constraints**: Max file size 250MB
 **Scale/Scope**: Single-user local deployment
@@ -53,12 +55,12 @@ backend/
 ├── vespa_app.py         # VespaQueryClient - Vespa operations
 └── models/
 
-frontend/
-├── __init__.py
-├── app.py               # UI components (SearchBox, SearchResult, etc.)
-└── layout.py            # Page layout wrapper
+web/                     # Next.js frontend
+├── src/app/
+│   └── upload/page.tsx  # Upload page component
+└── ...
 
-main.py                  # FastHTML application entry point
+main.py                  # Starlette API backend
 scripts/
 └── feed_data.py         # Existing batch ingestion script
 
@@ -67,7 +69,7 @@ vespa-app/
     └── pdf_page.sd      # Vespa document schema
 ```
 
-**Structure Decision**: Extend existing structure. Add upload endpoint to `main.py`, new upload UI component to `frontend/app.py`, and ingestion service module to `backend/`.
+**Structure Decision**: Extend existing structure. Add upload API endpoint to `main.py` and upload page to Next.js frontend (`web/`).
 
 ## Complexity Tracking
 

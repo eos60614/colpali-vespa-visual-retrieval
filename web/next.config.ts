@@ -29,6 +29,10 @@ const nextConfig: NextConfig = {
         source: "/api/image",
         destination: `${BACKEND_URL}/api/full_image`,
       },
+      {
+        source: "/api/synthesize",
+        destination: `${BACKEND_URL}/api/synthesize`,
+      },
     ];
   },
 };

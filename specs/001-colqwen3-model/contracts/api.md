@@ -1,10 +1,12 @@
 # API Contracts: Add ColQwen3 Model Support
 
+> **Note**: This contract was written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). The search endpoint now returns JSON.
+
 **Branch**: `001-colqwen3-model` | **Date**: 2026-01-14
 
 ## Overview
 
-This document defines the API contract changes for adding ColQwen3 model support. The application uses FastHTML with HTMX, so contracts are defined for HTTP endpoints rather than REST/GraphQL.
+This document defines the API contract changes for adding ColQwen3 model support. The application uses Starlette with JSON APIs.
 
 ---
 
@@ -31,11 +33,11 @@ GET /search?query=financial+report&ranking=hybrid&model=colqwen3
 
 ---
 
-### GET /fetch_results
+### POST /api/search
 
-HTMX endpoint for fetching search results.
+JSON endpoint for fetching search results.
 
-**Query Parameters**:
+**Request Body**:
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -43,16 +45,13 @@ HTMX endpoint for fetching search results.
 | `ranking` | string | Yes | - | Ranking method |
 | `model` | string | No | `"colpali"` | Model to use for query embeddings |
 
-**Request Headers**:
-- `HX-Request: true` (required for HTMX)
-
-**Response**: HTML fragment with search results
+**Response**: JSON with search results
 
 **Error Response** (model load failure):
-```html
-<div class="error-message">
-  <p>Failed to load ColQwen3 model: {error_message}</p>
-</div>
+```json
+{
+  "error": "Failed to load ColQwen3 model: {error_message}"
+}
 ```
 
 ---
@@ -135,8 +134,7 @@ Form
 │   └── RadioGroupItem (value="colqwen3")
 └── Button (type="submit")
 
-→ Submits to: /search?query={query}&ranking={ranking}&model={model}
-→ HTMX target: /fetch_results?query={query}&ranking={ranking}&model={model}
+→ Submits to: POST /api/search with JSON body
 ```
 
 ---

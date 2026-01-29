@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   FolderOpen,
   Search,
@@ -11,6 +12,8 @@ import {
   PanelLeftClose,
   PanelLeft,
   Layers,
+  Eye,
+  Upload,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatDate, truncate, getInitials, pluralize } from "@/lib/utils";
@@ -78,6 +81,35 @@ export function Sidebar({
             </button>
           </Tooltip>
         ))}
+
+        <div className="flex-1" />
+
+        <div className="w-8 h-px bg-[var(--border-primary)] my-2" />
+
+        <Tooltip content="Visual Search" side="right">
+          <Link
+            href="/visual-search"
+            className={cn(
+              "w-9 h-9 rounded-[var(--radius-md)] flex items-center justify-center",
+              "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]",
+              "transition-all duration-[var(--transition-fast)]"
+            )}
+          >
+            <Eye className="h-4 w-4" />
+          </Link>
+        </Tooltip>
+        <Tooltip content="Upload Document" side="right">
+          <Link
+            href="/upload"
+            className={cn(
+              "w-9 h-9 rounded-[var(--radius-md)] flex items-center justify-center",
+              "text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]",
+              "transition-all duration-[var(--transition-fast)]"
+            )}
+          >
+            <Upload className="h-4 w-4" />
+          </Link>
+        </Tooltip>
       </aside>
     );
   }
@@ -142,6 +174,39 @@ export function Sidebar({
             No projects match &ldquo;{projectFilter}&rdquo;
           </div>
         )}
+      </div>
+
+      {/* Quick Links */}
+      <div className="border-t border-[var(--border-primary)] px-2 py-2">
+        <div className="flex items-center gap-1.5 px-2 py-1.5">
+          <span className="text-[11px] font-medium text-[var(--text-tertiary)] uppercase tracking-wider">
+            Quick Links
+          </span>
+        </div>
+        <div className="space-y-0.5">
+          <Link
+            href="/visual-search"
+            className={cn(
+              "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs",
+              "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+              "hover:bg-[var(--bg-tertiary)] transition-colors"
+            )}
+          >
+            <Eye className="h-3.5 w-3.5" />
+            Visual Search
+          </Link>
+          <Link
+            href="/upload"
+            className={cn(
+              "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-[var(--radius-sm)] text-xs",
+              "text-[var(--text-secondary)] hover:text-[var(--text-primary)]",
+              "hover:bg-[var(--bg-tertiary)] transition-colors"
+            )}
+          >
+            <Upload className="h-3.5 w-3.5" />
+            Upload Document
+          </Link>
+        </div>
       </div>
 
       {/* Recent Queries */}

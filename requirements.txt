@@ -27,7 +27,6 @@ async-timeout==4.0.3
 attrs==24.2.0
     # via aiohttp
 beautifulsoup4==4.12.3
-    # via python-fasthtml
 blis==0.7.11
     # via thinc
 cachetools==5.5.0
@@ -90,13 +89,7 @@ eval-type-backport==0.2.0
 exceptiongroup==1.2.2
     # via anyio
 fastcore==1.8.15
-    # via
-    #   apswutils
-    #   fastlite
-    #   python-fasthtml
-    #   pyvespa
-fastlite==0.2.1
-    # via python-fasthtml
+    # via pyvespa
 filelock==3.16.1
     # via
     #   datasets
@@ -167,9 +160,7 @@ httplib2==0.22.0
 httptools==0.7.1
     # via uvicorn
 httpx==0.27.2
-    # via
-    #   python-fasthtml
-    #   pyvespa
+    # via pyvespa
 huggingface-hub==0.36.0
     # via
     #   visual-retrieval-colpali (pyproject.toml)
@@ -187,8 +178,6 @@ idna==3.10
     #   httpx
     #   requests
     #   yarl
-itsdangerous==2.2.0
-    # via python-fasthtml
 jinja2==3.1.6
     # via
     #   pyvespa
@@ -204,12 +193,8 @@ language-data==1.2.0
     # via langcodes
 loguru==0.7.2
     # via vidore-benchmark
-lucide-fasthtml==0.0.9
-    # via shad4fast
 lxml==5.3.0
-    # via
-    #   lucide-fasthtml
-    #   pyvespa
+    # via pyvespa
 marisa-trie==1.2.1
     # via language-data
 markdown-it-py==3.0.0
@@ -258,8 +243,6 @@ numpy==1.26.4
     #   thinc
     #   transformers
     #   vidore-benchmark
-oauthlib==3.2.2
-    # via python-fasthtml
 packaging==24.1
     # via
     #   accelerate
@@ -349,20 +332,14 @@ python-dateutil==2.9.0.post0
     # via
     #   matplotlib
     #   pandas
-    #   python-fasthtml
     #   pyvespa
 python-dotenv==1.0.1
     # via
     #   visual-retrieval-colpali (pyproject.toml)
     #   uvicorn
     #   vidore-benchmark
-python-fasthtml==0.12.33
-    # via
-    #   visual-retrieval-colpali (pyproject.toml)
-    #   lucide-fasthtml
-    #   shad4fast
 python-multipart==0.0.18
-    # via python-fasthtml
+    # via starlette
 pytrec-eval-terrier==0.5.6
     # via mteb
 pytz==2024.2
@@ -386,7 +363,6 @@ requests==2.32.4
     #   docker
     #   google-api-core
     #   huggingface-hub
-    #   lucide-fasthtml
     #   mteb
     #   pyvespa
     #   requests-toolbelt
@@ -429,8 +405,6 @@ setuptools==78.1.1
     #   marisa-trie
     #   spacy
     #   thinc
-shad4fast==1.2.1
-    # via visual-retrieval-colpali (pyproject.toml)
 shellingham==1.5.4
     # via typer
 six==1.16.0
@@ -456,7 +430,7 @@ srsly==2.4.8
     #   thinc
     #   weasel
 starlette==0.49.1
-    # via python-fasthtml
+    # via visual-retrieval-colpali
 sympy==1.13.3
     # via torch
 tenacity==9.0.0
@@ -525,9 +499,7 @@ urllib3==2.5.0
     #   docker
     #   requests
 uvicorn==0.38.0
-    # via
-    #   visual-retrieval-colpali (pyproject.toml)
-    #   python-fasthtml
+    # via visual-retrieval-colpali
 uvloop==0.20.0
     # via uvicorn
 vespacli==8.391.23

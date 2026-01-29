@@ -1,5 +1,7 @@
 # Implementation Plan: Add ColQwen3 Model Support
 
+> **Note**: This spec was written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). The model support implementation is complete and still valid.
+
 **Branch**: `001-colqwen3-model` | **Date**: 2026-01-14 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `/specs/001-colqwen3-model/spec.md`
 
@@ -10,11 +12,11 @@ Add TomoroAI/tomoro-colqwen3-embed-4b as an alternative embedding model for visu
 ## Technical Context
 
 **Language/Version**: Python 3.11+
-**Primary Dependencies**: FastHTML, transformers, torch, colpali-engine, pyvespa, shad4fast
+**Primary Dependencies**: Starlette, transformers, torch, colpali-engine, pyvespa
 **Storage**: Vespa (document storage), filesystem (cached images/sim maps)
 **Testing**: Manual testing (no existing test framework in codebase)
 **Target Platform**: Linux server with CUDA GPU
-**Project Type**: Web application (FastHTML backend + frontend)
+**Project Type**: Web application (Starlette backend + Next.js frontend)
 **Performance Goals**: Model swap < 30 seconds, search latency within 20% of ColPali
 **Constraints**: Single GPU, one model loaded at a time, 8GB+ VRAM recommended
 **Scale/Scope**: Evaluation use case, single user at a time

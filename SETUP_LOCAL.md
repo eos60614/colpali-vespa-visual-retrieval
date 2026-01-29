@@ -76,10 +76,14 @@ python scripts/feed_data.py --pdf-folder /path/to/your/pdfs
 ### 6. Start the Application
 
 ```bash
+# Start the backend API server
 python main.py
+
+# In a separate terminal, start the Next.js frontend
+cd web && npm install && npm run dev
 ```
 
-Open http://localhost:7860 in your browser.
+Open http://localhost:3000 in your browser (frontend) or http://localhost:7860 for direct API access.
 
 ## Automated Setup
 
@@ -94,13 +98,20 @@ Run the setup script to automate steps 1-2:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Web Browser                             │
-│                   http://localhost:7860                      │
+│                   http://localhost:3000                      │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    FastHTML Application                      │
+│                  Next.js Frontend (web/)                     │
+│                   http://localhost:3000                      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Starlette API Backend                       │
 │                        (main.py)                             │
+│                   http://localhost:7860                      │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
 │  │   ColPali    │  │   Vespa      │  │  OpenRouter/ │       │
 │  │   Embeddings │  │   Client     │  │  Ollama(opt) │       │
