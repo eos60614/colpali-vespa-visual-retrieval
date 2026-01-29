@@ -50,6 +50,7 @@ Development slash commands are defined in `.claude/commands/`. Key ones:
 - **`/lint-fix`** — Auto-fix linting issues with `ruff check --fix` + `ruff format`, logs to `logs/lint-fix.log`
 - **`/test`** — Run pytest with `-v -x --tb=short`, supports `-k` pattern matching, logs to `logs/test.log`
 - **`/server`** — Start backend dev server in background (port 7860), pre-flight checks for Vespa/port availability, logs to `logs/server.log`
+- **`/search-test`** — Test search queries against the backend API, shows results with relevance scores, logs to `logs/search-test.log`
 - **`/debug`** — Search git branches for existing fixes to similar issues
 
 All slash commands detect and activate the virtual environment (`venv/`, `.venv/`, or `env/`), log output to `logs/`, and use the Read tool to check results (preserving context window).
