@@ -75,8 +75,13 @@ export function QueryInput({
           dispatchSuggest({ type: "show", items: results.slice(0, 6) });
           setSelectedSuggestionIdx(-1);
         }
-      } catch {
-        // aborted or failed
+      } catch (e) {
+        if ((e as Error).name === "AbortError") {
+          // Request was cancelled, this is expected
+          return;
+        }
+        // Log error for debugging - don't crash UI for autocomplete failures
+        console.error("[QueryInput] Suggestions fetch failed:", e);
       }
     }, 250);
 

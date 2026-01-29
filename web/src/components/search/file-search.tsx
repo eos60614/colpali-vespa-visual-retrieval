@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useMemo } from "react";
-import { Search, FileText, Hash, Tag, ChevronRight, Plus, Check } from "lucide-react";
+import { Search, FileText, Hash, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
-import { CATEGORY_LABELS, CATEGORY_COLORS, type Document, type DocumentCategory } from "@/types";
+import { CATEGORY_LABELS, CATEGORY_COLORS, type Document } from "@/types";
 
 const DEMO_DOCUMENTS: Document[] = [
   { id: "doc-1", title: "MEP Drawings — Fire Protection", documentNumber: "M-401", category: "drawing", pageCount: 24, uploadedAt: "2025-01-05", tags: ["MEP", "fire protection"] },

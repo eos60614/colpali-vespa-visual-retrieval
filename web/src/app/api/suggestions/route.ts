@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getLogger, CORRELATION_HEADER } from "@/lib/logger";
+import { getLogger, CORRELATION_HEADER, sanitizeErrorForClient } from "@/lib/logger";
+import { getBackendUrl } from "@/lib/config";
 
 const logger = getLogger("api/suggestions");
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -15,22 +15,31 @@ export async function GET(request: NextRequest) {
 
   try {
     const res = await fetch(
-      `${BACKEND_URL}/suggestions?query=${encodeURIComponent(query)}`,
+      `${getBackendUrl()}/suggestions?query=${encodeURIComponent(query)}`,
       { headers: { [CORRELATION_HEADER]: correlationId } }
     );
 
     if (!res.ok) {
-      logger.warn("Backend suggestions request failed", {
+      const text = await res.text();
+      logger.error("Backend suggestions request failed", {
         status: res.status,
+        body: text,
         correlationId,
       });
-      return NextResponse.json({ suggestions: [] });
+      return NextResponse.json(
+        { error: text || "Backend suggestions failed", correlationId },
+        { status: res.status, headers: { [CORRELATION_HEADER]: correlationId } }
+      );
     }
 
     const data = await res.json();
     return NextResponse.json(data);
   } catch (e) {
     logger.error("Suggestions route error", { error: e, correlationId });
-    return NextResponse.json({ suggestions: [] });
+    const message = sanitizeErrorForClient(e);
+    return NextResponse.json(
+      { error: message, correlationId },
+      { status: 500, headers: { [CORRELATION_HEADER]: correlationId } }
+    );
   }
 }

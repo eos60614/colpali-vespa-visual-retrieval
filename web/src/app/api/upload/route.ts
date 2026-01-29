@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLogger, CORRELATION_HEADER, sanitizeErrorForClient } from "@/lib/logger";
+import { getBackendUrl } from "@/lib/config";
 
 const logger = getLogger("api/upload");
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
 
 export async function POST(request: NextRequest) {
   const correlationId = request.headers.get(CORRELATION_HEADER) || "";
@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
 
     logger.info("Upload request received", { correlationId });
 
-    const res = await fetch(`${BACKEND_URL}/upload`, {
+    const res = await fetch(`${getBackendUrl()}/upload`, {
       method: "POST",
       headers: { [CORRELATION_HEADER]: correlationId },
       body: formData,

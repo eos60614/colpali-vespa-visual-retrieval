@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { FileText, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
@@ -51,11 +52,13 @@ export function ResultCard({ result, index, isSelected, onSelect, onPreview }: R
       <div className="flex gap-3">
         {/* Blur thumbnail */}
         {result.blurImage && (
-          <div className="shrink-0 w-20 h-[106px] rounded-[var(--radius-md)] overflow-hidden bg-[var(--bg-tertiary)] border border-[var(--border-primary)]">
-            <img
+          <div className="shrink-0 w-20 h-[106px] rounded-[var(--radius-md)] overflow-hidden bg-[var(--bg-tertiary)] border border-[var(--border-primary)] relative">
+            <Image
               src={result.blurImage}
               alt={`Page ${result.pageNumber}`}
-              className="w-full h-full object-cover"
+              fill
+              className="object-cover"
+              unoptimized
             />
           </div>
         )}

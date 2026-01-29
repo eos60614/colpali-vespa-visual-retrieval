@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLogger, CORRELATION_HEADER, sanitizeErrorForClient } from "@/lib/logger";
+import { getBackendUrl } from "@/lib/config";
 
 const logger = getLogger("api/search");
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
 
 export async function POST(request: NextRequest) {
   const correlationId = request.headers.get(CORRELATION_HEADER) || "";
@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
       correlationId,
     });
 
-    const res = await fetch(`${BACKEND_URL}/api/search`, {
+    const res = await fetch(`${getBackendUrl()}/api/search`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

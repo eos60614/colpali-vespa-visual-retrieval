@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useReducer, useEffect } from "react";
+import Image from "next/image";
 import {
   X,
   ZoomIn,
@@ -54,7 +55,10 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
     dispatchImg({ type: "loading" });
     getFullImage(docId)
       .then((img) => { if (!cancelled) dispatchImg({ type: "loaded", image: img }); })
-      .catch(() => { if (!cancelled) dispatchImg({ type: "loaded", image: null }); });
+      .catch((e) => {
+        console.error("[DocumentViewer] Failed to load full image:", e);
+        if (!cancelled) dispatchImg({ type: "loaded", image: null });
+      });
     return () => { cancelled = true; };
   }, [docId]);
 
@@ -138,20 +142,23 @@ export function DocumentViewer({ result, onClose, onOpenRelated }: DocumentViewe
                 </div>
               </div>
             ) : fullImage ? (
-              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden max-h-full">
-                <img
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden max-h-full relative" style={{ width: "612px", height: "792px" }}>
+                <Image
                   src={fullImage}
                   alt={`${result.title} — Page ${result.pageNumber}`}
-                  className="max-w-full max-h-full object-contain"
-                  style={{ maxWidth: "612px" }}
+                  fill
+                  className="object-contain"
+                  unoptimized
                 />
               </div>
             ) : result.blurImage ? (
-              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden" style={{ width: "612px", height: "792px" }}>
-                <img
+              <div className="bg-white shadow-[var(--shadow-lg)] rounded-sm overflow-hidden relative" style={{ width: "612px", height: "792px" }}>
+                <Image
                   src={result.blurImage}
                   alt={`${result.title} — Page ${result.pageNumber} (preview)`}
-                  className="w-full h-full object-contain opacity-60"
+                  fill
+                  className="object-contain opacity-60"
+                  unoptimized
                 />
               </div>
             ) : (

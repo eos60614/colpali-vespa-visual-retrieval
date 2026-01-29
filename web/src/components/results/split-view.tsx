@@ -1,6 +1,7 @@
 "use client";
 
 import { useReducer, useEffect } from "react";
+import Image from "next/image";
 import { SourcePanel } from "./source-panel";
 import { AnswerPanel } from "./answer-panel";
 import { getFullImage } from "@/lib/api-client";
@@ -106,7 +107,10 @@ function SelectedSourcePreview({ result }: { result?: SearchResult }) {
     dispatchImg({ type: "loading" });
     getFullImage(docId)
       .then((img) => { if (!cancelled) dispatchImg({ type: "loaded", image: img }); })
-      .catch(() => { if (!cancelled) dispatchImg({ type: "loaded", image: null }); });
+      .catch((e) => {
+        console.error("[SplitView] Failed to load full image:", e);
+        if (!cancelled) dispatchImg({ type: "loaded", image: null });
+      });
     return () => { cancelled = true; };
   }, [docId]);
 
@@ -141,16 +145,20 @@ function SelectedSourcePreview({ result }: { result?: SearchResult }) {
               </div>
             </div>
           ) : fullImage ? (
-            <img
+            <Image
               src={fullImage}
               alt={`${result.title} — Page ${result.pageNumber}`}
-              className="w-full h-full object-contain"
+              fill
+              className="object-contain"
+              unoptimized
             />
           ) : result.blurImage ? (
-            <img
+            <Image
               src={result.blurImage}
               alt={`${result.title} — Page ${result.pageNumber} (preview)`}
-              className="w-full h-full object-contain opacity-60"
+              fill
+              className="object-contain opacity-60"
+              unoptimized
             />
           ) : (
             <p className="text-xs text-[var(--text-tertiary)]">Image unavailable</p>
