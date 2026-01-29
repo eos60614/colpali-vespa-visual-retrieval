@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 from urllib.parse import quote_plus
 
@@ -667,13 +668,15 @@ def SearchResult(
                                 cls="flex items-center gap-1.5 font-mono bold text-sm",
                             ),
                             *(
-                                [A(
-                                    Lucide(icon="download", size="18"),
-                                    "Download Original PDF",
-                                    href=f"/download_pdf?doc_id={doc_id}",
-                                    target="_blank",
-                                    cls="flex items-center gap-1.5 font-mono bold text-sm hover:underline",
-                                )]
+                                [
+                                    A(
+                                        Lucide(icon="download", size="18"),
+                                        "Download Original PDF",
+                                        href=f"/download_pdf?doc_id={doc_id}",
+                                        target="_blank",
+                                        cls="flex items-center gap-1.5 font-mono bold text-sm hover:underline",
+                                    )
+                                ]
                                 if fields.get("s3_key")
                                 else []
                             ),
@@ -789,7 +792,10 @@ def UploadForm():
             Div(
                 Label("PDF File", htmlFor="pdf_file", cls="text-sm font-medium"),
                 Div(
-                    Lucide(icon="file-up", cls="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground"),
+                    Lucide(
+                        icon="file-up",
+                        cls="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground",
+                    ),
                     Div(
                         "Choose a PDF file (max 250MB)",
                         id="file-label",
@@ -820,7 +826,11 @@ def UploadForm():
                 cls="grid gap-2",
             ),
             Div(
-                Label("Description (optional)", htmlFor="description", cls="text-sm font-medium"),
+                Label(
+                    "Description (optional)",
+                    htmlFor="description",
+                    cls="text-sm font-medium",
+                ),
                 Textarea(
                     name="description",
                     id="description",
@@ -840,7 +850,10 @@ def UploadForm():
                     placeholder="Comma-separated tags (e.g., finance, report, 2024)",
                     cls="border border-input rounded-md px-3 py-2",
                 ),
-                P(f"Maximum {get('app', 'validation', 'max_tags')} tags, each up to {get('app', 'validation', 'max_tag_length')} characters", cls="text-xs text-muted-foreground"),
+                P(
+                    f"Maximum {get('app', 'validation', 'max_tags')} tags, each up to {get('app', 'validation', 'max_tag_length')} characters",
+                    cls="text-xs text-muted-foreground",
+                ),
                 cls="grid gap-2",
             ),
             Button(
@@ -919,29 +932,42 @@ def UploadSidebar():
             Ul(
                 Li(
                     Div(
-                        Lucide(icon="file-check", size="16", cls="text-green-500 mt-0.5"),
-                        Span("PDF files up to 250MB", cls="text-sm text-muted-foreground"),
+                        Lucide(
+                            icon="file-check", size="16", cls="text-green-500 mt-0.5"
+                        ),
+                        Span(
+                            "PDF files up to 250MB", cls="text-sm text-muted-foreground"
+                        ),
                         cls="flex items-start gap-2",
                     ),
                 ),
                 Li(
                     Div(
                         Lucide(icon="tag", size="16", cls="text-blue-500 mt-0.5"),
-                        Span("Add tags to improve search relevance", cls="text-sm text-muted-foreground"),
+                        Span(
+                            "Add tags to improve search relevance",
+                            cls="text-sm text-muted-foreground",
+                        ),
                         cls="flex items-start gap-2",
                     ),
                 ),
                 Li(
                     Div(
                         Lucide(icon="clock", size="16", cls="text-orange-500 mt-0.5"),
-                        Span("Large files may take a few minutes to process", cls="text-sm text-muted-foreground"),
+                        Span(
+                            "Large files may take a few minutes to process",
+                            cls="text-sm text-muted-foreground",
+                        ),
                         cls="flex items-start gap-2",
                     ),
                 ),
                 Li(
                     Div(
                         Lucide(icon="lock", size="16", cls="text-red-500 mt-0.5"),
-                        Span("Password-protected PDFs are not supported", cls="text-sm text-muted-foreground"),
+                        Span(
+                            "Password-protected PDFs are not supported",
+                            cls="text-sm text-muted-foreground",
+                        ),
                         cls="flex items-start gap-2",
                     ),
                 ),
@@ -1030,4 +1056,632 @@ def UploadError(error_message: str):
             cls="flex justify-center mt-6",
         ),
         cls="p-6 bg-red-50 dark:bg-red-950 rounded-lg border border-red-200 dark:border-red-800",
+    )
+
+
+# =============================================================================
+# Visual Document Search Components
+# =============================================================================
+
+# JavaScript for managing page selection state
+visual_search_selection_script = Script(
+    """
+    (function() {
+        // Selection state management
+        window.VisualSearchState = {
+            selectedPages: new Map(),  // doc_id -> {title, page_number, relevance, blur_image}
+
+            toggleSelection: function(docId, metadata) {
+                if (this.selectedPages.has(docId)) {
+                    this.selectedPages.delete(docId);
+                } else {
+                    this.selectedPages.set(docId, metadata);
+                }
+                this.updateUI();
+            },
+
+            clearSelection: function() {
+                this.selectedPages.clear();
+                this.updateUI();
+            },
+
+            selectTopN: function(n) {
+                // Get all result cards in order
+                const cards = document.querySelectorAll('[data-result-card]');
+                this.clearSelection();
+                cards.forEach((card, idx) => {
+                    if (idx < n) {
+                        const docId = card.dataset.docId;
+                        const metadata = JSON.parse(card.dataset.metadata);
+                        this.selectedPages.set(docId, metadata);
+                    }
+                });
+                this.updateUI();
+            },
+
+            updateUI: function() {
+                const count = this.selectedPages.size;
+
+                // Update footer visibility and count
+                const footer = document.getElementById('selection-footer');
+                const countEl = document.getElementById('selection-count');
+                const getAnswerBtn = document.getElementById('get-answer-btn');
+
+                if (footer) {
+                    if (count > 0) {
+                        footer.classList.remove('translate-y-full', 'opacity-0');
+                        footer.classList.add('translate-y-0', 'opacity-100');
+                    } else {
+                        footer.classList.add('translate-y-full', 'opacity-0');
+                        footer.classList.remove('translate-y-0', 'opacity-100');
+                    }
+                }
+
+                if (countEl) {
+                    countEl.textContent = count + (count === 1 ? ' page' : ' pages') + ' selected';
+                }
+
+                if (getAnswerBtn) {
+                    getAnswerBtn.disabled = count === 0;
+                }
+
+                // Update card visual states
+                document.querySelectorAll('[data-result-card]').forEach(card => {
+                    const docId = card.dataset.docId;
+                    const checkbox = card.querySelector('[data-checkbox]');
+                    const isSelected = this.selectedPages.has(docId);
+
+                    if (isSelected) {
+                        card.classList.add('ring-2', 'ring-primary', 'ring-offset-2');
+                        if (checkbox) checkbox.checked = true;
+                    } else {
+                        card.classList.remove('ring-2', 'ring-primary', 'ring-offset-2');
+                        if (checkbox) checkbox.checked = false;
+                    }
+                });
+            },
+
+            getSelectedDocIds: function() {
+                return Array.from(this.selectedPages.keys());
+            }
+        };
+
+        // Event delegation for card selection
+        document.addEventListener('click', function(e) {
+            // Handle checkbox click
+            const checkbox = e.target.closest('[data-checkbox]');
+            if (checkbox) {
+                e.preventDefault();
+                const card = checkbox.closest('[data-result-card]');
+                if (card) {
+                    const docId = card.dataset.docId;
+                    const metadata = JSON.parse(card.dataset.metadata);
+                    window.VisualSearchState.toggleSelection(docId, metadata);
+                }
+                return;
+            }
+
+            // Handle thumbnail click (opens modal)
+            const thumbnail = e.target.closest('[data-thumbnail]');
+            if (thumbnail) {
+                const card = thumbnail.closest('[data-result-card]');
+                if (card) {
+                    const docId = card.dataset.docId;
+                    window.openPageDetailModal(docId);
+                }
+                return;
+            }
+        });
+
+        // Handle "Select top N" dropdown
+        document.addEventListener('change', function(e) {
+            if (e.target.id === 'select-top-n') {
+                const n = parseInt(e.target.value);
+                if (n > 0) {
+                    window.VisualSearchState.selectTopN(n);
+                }
+                e.target.value = '';  // Reset dropdown
+            }
+        });
+    })();
+    """
+)
+
+# JavaScript for page detail modal
+page_detail_modal_script = Script(
+    """
+    (function() {
+        window.openPageDetailModal = function(docId) {
+            const modal = document.getElementById('page-detail-modal');
+            const content = document.getElementById('modal-content');
+
+            if (modal && content) {
+                // Show loading state
+                content.innerHTML = '<div class="flex items-center justify-center p-10"><div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div></div>';
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+
+                // Fetch full page details via HTMX
+                htmx.ajax('GET', '/visual-search/page-detail?doc_id=' + docId, {target: '#modal-content', swap: 'innerHTML'});
+            }
+        };
+
+        window.closePageDetailModal = function() {
+            const modal = document.getElementById('page-detail-modal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+        };
+
+        // Close modal on backdrop click
+        document.addEventListener('click', function(e) {
+            if (e.target.id === 'page-detail-modal') {
+                window.closePageDetailModal();
+            }
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                window.closePageDetailModal();
+            }
+        });
+
+        // Navigate between results in modal
+        window.navigateModal = function(direction) {
+            const cards = document.querySelectorAll('[data-result-card]');
+            const currentDocId = document.getElementById('modal-content')?.dataset?.currentDocId;
+
+            if (!currentDocId || !cards.length) return;
+
+            let currentIdx = -1;
+            cards.forEach((card, idx) => {
+                if (card.dataset.docId === currentDocId) currentIdx = idx;
+            });
+
+            let newIdx = currentIdx + direction;
+            if (newIdx < 0) newIdx = cards.length - 1;
+            if (newIdx >= cards.length) newIdx = 0;
+
+            const newDocId = cards[newIdx].dataset.docId;
+            window.openPageDetailModal(newDocId);
+        };
+    })();
+    """
+)
+
+# JavaScript for answer synthesis
+answer_synthesis_script = Script(
+    """
+    (function() {
+        window.requestAnswerSynthesis = function() {
+            const selectedDocIds = window.VisualSearchState.getSelectedDocIds();
+            if (selectedDocIds.length === 0) return;
+
+            const queryInput = document.getElementById('visual-search-input');
+            const query = queryInput ? queryInput.value : '';
+
+            // Show answer panel
+            const answerPanel = document.getElementById('answer-panel');
+            const answerContent = document.getElementById('answer-content');
+
+            if (answerPanel && answerContent) {
+                answerPanel.classList.remove('hidden');
+                answerContent.innerHTML = '<div class="flex items-center gap-2 text-muted-foreground"><div class="animate-spin rounded-full h-4 w-4 border-b-2 border-primary"></div><span>Analyzing ' + selectedDocIds.length + ' pages...</span></div>';
+
+                // Scroll to answer panel
+                answerPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+
+            // Use SSE to stream the response
+            const url = '/visual-search/synthesize?query=' + encodeURIComponent(query) + '&doc_ids=' + selectedDocIds.join(',');
+            const eventSource = new EventSource(url);
+
+            eventSource.addEventListener('message', function(e) {
+                if (answerContent) {
+                    answerContent.innerHTML = e.data;
+                }
+            });
+
+            eventSource.addEventListener('close', function(e) {
+                eventSource.close();
+            });
+
+            eventSource.onerror = function(e) {
+                eventSource.close();
+                if (answerContent && !answerContent.innerHTML.includes('Error')) {
+                    answerContent.innerHTML += '<p class="text-red-500 mt-2">Connection closed.</p>';
+                }
+            };
+        };
+
+        window.closeAnswerPanel = function() {
+            const answerPanel = document.getElementById('answer-panel');
+            if (answerPanel) {
+                answerPanel.classList.add('hidden');
+            }
+        };
+
+        window.refineAnswer = function() {
+            // Keep selections but close answer panel for adjustments
+            window.closeAnswerPanel();
+        };
+    })();
+    """
+)
+
+
+def VisualSearchBox(query_value=""):
+    """Single-line search input for visual document search."""
+    return Form(
+        Div(
+            Lucide(
+                icon="search",
+                cls="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground z-10",
+            ),
+            Input(
+                placeholder="Ask a question about your documents...",
+                name="query",
+                value=query_value,
+                id="visual-search-input",
+                cls="text-base pl-10 pr-4 h-12 border border-input rounded-lg bg-background focus-visible:ring-2 focus-visible:ring-primary",
+                style="font-size: 1rem",
+                autofocus=True,
+            ),
+            Button(
+                Lucide(icon="arrow-right", size="20"),
+                type="submit",
+                size="icon",
+                cls="absolute right-2 top-1/2 -translate-y-1/2",
+            ),
+            cls="relative w-full max-w-2xl mx-auto",
+        ),
+        action="/visual-search",
+        method="GET",
+        cls="w-full",
+    )
+
+
+def VisualSearchResultCard(result: dict, idx: int):
+    """Individual result card with selectable thumbnail."""
+    fields = result.get("fields", {})
+    doc_id = fields.get("id", "")
+    title = fields.get("title", "Unknown")
+    page_number = fields.get("page_number", 0) + 1
+    relevance = result.get("relevance", 0)
+    blur_image = fields.get("blur_image", "")
+
+    # Metadata for JavaScript
+    metadata = {
+        "title": title,
+        "page_number": page_number,
+        "relevance": relevance,
+    }
+
+    relevance_pct = f"{relevance * 100:.0f}%" if relevance <= 1 else f"{relevance:.1f}"
+
+    return Div(
+        # Checkbox overlay
+        Div(
+            HtmlInput(
+                type="checkbox",
+                data_checkbox="true",
+                cls="h-5 w-5 rounded border-2 border-white bg-white/80 cursor-pointer accent-primary",
+            ),
+            cls="absolute top-2 left-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity",
+        ),
+        # Relevance badge
+        Div(
+            Badge(relevance_pct, variant="secondary", cls="text-xs font-mono"),
+            cls="absolute top-2 right-2 z-10",
+        ),
+        # Thumbnail
+        Div(
+            Img(
+                src=f"data:image/jpeg;base64,{blur_image}" if blur_image else "",
+                alt=f"{title} - Page {page_number}",
+                data_thumbnail="true",
+                cls="w-full h-full object-cover cursor-pointer hover:opacity-90 transition-opacity",
+            ),
+            cls="aspect-[3/4] bg-muted overflow-hidden rounded-t-lg",
+        ),
+        # Info footer
+        Div(
+            P(title, cls="text-sm font-medium truncate"),
+            P(f"Page {page_number}", cls="text-xs text-muted-foreground"),
+            cls="p-2 bg-background border-t",
+        ),
+        data_result_card="true",
+        data_doc_id=doc_id,
+        data_metadata=json.dumps(metadata),
+        cls="group relative rounded-lg border bg-card overflow-hidden transition-all hover:shadow-md cursor-pointer",
+    )
+
+
+def VisualSearchResultGrid(
+    results: list, query: str, query_id: str, search_time: float, total_count: int
+):
+    """Grid of selectable result thumbnails."""
+    if not results:
+        return Div(
+            Div(
+                Lucide(icon="search-x", size="48", cls="text-muted-foreground mb-4"),
+                P("No matching pages found.", cls="text-lg font-medium"),
+                P("Try a different query.", cls="text-muted-foreground"),
+                cls="flex flex-col items-center justify-center py-16",
+            ),
+            id="visual-search-results",
+        )
+
+    result_cards = [
+        VisualSearchResultCard(result, idx) for idx, result in enumerate(results)
+    ]
+
+    return Div(
+        # Search info
+        Div(
+            Span(
+                f"Found {total_count} results in {search_time:.2f}s",
+                cls="text-sm text-muted-foreground",
+            ),
+            Div(
+                Label(
+                    "Select:",
+                    htmlFor="select-top-n",
+                    cls="text-sm text-muted-foreground",
+                ),
+                Div(
+                    HtmlInput(
+                        type="button",
+                        value="Top 3",
+                        onclick="window.VisualSearchState.selectTopN(3)",
+                        cls="px-2 py-1 text-xs border rounded hover:bg-muted cursor-pointer",
+                    ),
+                    HtmlInput(
+                        type="button",
+                        value="Top 5",
+                        onclick="window.VisualSearchState.selectTopN(5)",
+                        cls="px-2 py-1 text-xs border rounded hover:bg-muted cursor-pointer",
+                    ),
+                    HtmlInput(
+                        type="button",
+                        value="Top 10",
+                        onclick="window.VisualSearchState.selectTopN(10)",
+                        cls="px-2 py-1 text-xs border rounded hover:bg-muted cursor-pointer",
+                    ),
+                    cls="flex gap-1",
+                ),
+                cls="flex items-center gap-2",
+            ),
+            cls="flex items-center justify-between px-4 py-3 bg-muted/50 border-b",
+        ),
+        # Results grid
+        Div(
+            *result_cards,
+            cls="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 p-4",
+        ),
+        id="visual-search-results",
+        cls="min-h-0 overflow-auto",
+    )
+
+
+def SelectionFooter():
+    """Sticky footer showing selection count and Get Answer button."""
+    return Div(
+        Div(
+            Div(
+                Span(
+                    "0 pages selected", id="selection-count", cls="text-sm font-medium"
+                ),
+                Button(
+                    "Clear",
+                    variant="link",
+                    size="sm",
+                    onclick="window.VisualSearchState.clearSelection()",
+                    cls="text-muted-foreground",
+                ),
+                cls="flex items-center gap-4",
+            ),
+            Button(
+                Lucide(icon="sparkles", cls="mr-2"),
+                "Get Answer from Selection",
+                id="get-answer-btn",
+                onclick="window.requestAnswerSynthesis()",
+                disabled=True,
+                cls="",
+            ),
+            cls="flex items-center justify-between max-w-4xl mx-auto w-full",
+        ),
+        id="selection-footer",
+        cls="fixed bottom-0 left-0 right-0 bg-background border-t shadow-lg px-4 py-3 transition-all duration-300 translate-y-full opacity-0 z-50",
+    )
+
+
+def AnswerPanel():
+    """Panel displaying the synthesized answer."""
+    return Div(
+        Div(
+            Div(
+                H2("Answer", cls="text-lg font-semibold"),
+                Div(
+                    Button(
+                        "Refine",
+                        variant="outline",
+                        size="sm",
+                        onclick="window.refineAnswer()",
+                    ),
+                    Button(
+                        Lucide(icon="x", size="16"),
+                        variant="ghost",
+                        size="icon",
+                        onclick="window.closeAnswerPanel()",
+                    ),
+                    cls="flex items-center gap-2",
+                ),
+                cls="flex items-center justify-between mb-4",
+            ),
+            Div(
+                id="answer-content",
+                cls="prose prose-sm dark:prose-invert max-w-none",
+            ),
+            cls="p-6 bg-card border rounded-lg shadow-sm max-w-4xl mx-auto",
+        ),
+        id="answer-panel",
+        cls="hidden px-4 py-6 bg-muted/30 border-b",
+    )
+
+
+def PageDetailModal():
+    """Modal for viewing full page details."""
+    return Div(
+        Div(
+            # Close button
+            Button(
+                Lucide(icon="x", size="20"),
+                variant="ghost",
+                size="icon",
+                onclick="window.closePageDetailModal()",
+                cls="absolute top-4 right-4 z-10",
+            ),
+            # Navigation arrows
+            Button(
+                Lucide(icon="chevron-left", size="24"),
+                variant="ghost",
+                size="icon",
+                onclick="window.navigateModal(-1)",
+                cls="absolute left-4 top-1/2 -translate-y-1/2 z-10",
+            ),
+            Button(
+                Lucide(icon="chevron-right", size="24"),
+                variant="ghost",
+                size="icon",
+                onclick="window.navigateModal(1)",
+                cls="absolute right-4 top-1/2 -translate-y-1/2 z-10",
+            ),
+            # Content container
+            Div(
+                id="modal-content",
+                cls="bg-background rounded-lg shadow-xl max-w-4xl max-h-[90vh] overflow-auto",
+            ),
+            cls="relative w-full h-full flex items-center justify-center p-4",
+        ),
+        id="page-detail-modal",
+        cls="hidden fixed inset-0 bg-black/50 z-50 items-center justify-center",
+    )
+
+
+def PageDetailContent(doc_id: str, fields: dict, is_selected: bool = False):
+    """Content for the page detail modal."""
+    title = fields.get("title", "Unknown")
+    page_number = fields.get("page_number", 0) + 1
+    text = fields.get("text", "")
+    url = fields.get("url", "")
+    blur_image = fields.get("blur_image", "")
+
+    return Div(
+        # Header
+        Div(
+            Div(
+                H2(title, cls="text-xl font-semibold"),
+                Badge(f"Page {page_number}", variant="outline"),
+                cls="flex items-center gap-2",
+            ),
+            cls="p-4 border-b",
+        ),
+        # Image
+        Div(
+            Img(
+                src=f"data:image/jpeg;base64,{blur_image}" if blur_image else "",
+                hx_get=f"/full_image?doc_id={doc_id}",
+                hx_trigger="load",
+                hx_swap="outerHTML",
+                alt=f"{title} - Page {page_number}",
+                cls="max-h-[50vh] w-auto mx-auto",
+            ),
+            cls="p-4 bg-muted",
+        ),
+        # Actions
+        Div(
+            Button(
+                Lucide(icon="check" if is_selected else "plus", cls="mr-2"),
+                "Selected" if is_selected else "Select this page",
+                variant="default" if is_selected else "outline",
+                onclick=f"window.VisualSearchState.toggleSelection('{doc_id}', {json.dumps({'title': title, 'page_number': page_number})}); window.closePageDetailModal();",
+            ),
+            A(
+                Button(
+                    Lucide(icon="external-link", cls="mr-2"),
+                    "View PDF",
+                    variant="outline",
+                ),
+                href=f"{url}#page={page_number}" if url else "#",
+                target="_blank",
+            ),
+            cls="flex items-center gap-2 p-4 border-t",
+        ),
+        # Text preview
+        Div(
+            H3("Page Text", cls="text-sm font-semibold mb-2"),
+            P(
+                text[:1000] + "..." if len(text) > 1000 else text,
+                cls="text-sm text-muted-foreground whitespace-pre-wrap",
+            ),
+            cls="p-4 border-t max-h-48 overflow-auto",
+        )
+        if text
+        else None,
+        data_current_doc_id=doc_id,
+        cls="bg-background",
+    )
+
+
+def VisualSearchPage(query: str = ""):
+    """Main visual search page component."""
+    return Div(
+        # Answer panel (hidden initially)
+        AnswerPanel(),
+        # Main content
+        Div(
+            # Search bar
+            Div(
+                VisualSearchBox(query_value=query),
+                cls="px-4 py-6 border-b bg-background sticky top-0 z-40",
+            ),
+            # Results area (loaded via HTMX)
+            Div(
+                LoadingMessage("Searching documents...")
+                if query
+                else Div(
+                    Div(
+                        Lucide(
+                            icon="file-search",
+                            size="48",
+                            cls="text-muted-foreground mb-4",
+                        ),
+                        P(
+                            "Enter a question to search your documents",
+                            cls="text-lg font-medium text-muted-foreground",
+                        ),
+                        cls="flex flex-col items-center justify-center py-16",
+                    ),
+                ),
+                id="visual-search-results",
+                hx_get=f"/visual-search/results?query={quote_plus(query)}"
+                if query
+                else None,
+                hx_trigger="load" if query else None,
+                hx_swap="outerHTML",
+            ),
+            cls="flex-1 min-h-0 overflow-auto",
+        ),
+        # Selection footer
+        SelectionFooter(),
+        # Page detail modal
+        PageDetailModal(),
+        # Scripts
+        visual_search_selection_script,
+        page_detail_modal_script,
+        answer_synthesis_script,
+        cls="flex flex-col h-full",
     )
