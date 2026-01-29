@@ -131,6 +131,10 @@ def ThemeToggle(variant="ghost", cls=None, **kwargs):
 def Links():
     return Nav(
         A(
+            Button("Visual Search", variant="link"),
+            href="/visual-search",
+        ),
+        A(
             Button("Upload", variant="link"),
             href="/upload",
         ),

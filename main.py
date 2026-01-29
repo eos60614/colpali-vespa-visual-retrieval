@@ -33,12 +33,21 @@ from vespa.application import Vespa
 from backend.config import get
 from backend.logging_config import configure_logging, get_logger
 from backend.middleware import CorrelationIdMiddleware, ErrorBoundaryMiddleware
-from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
+from backend.llm_config import (
+    resolve_llm_config,
+    get_chat_model,
+    is_remote_api,
+    build_auth_headers,
+)
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
 from backend.s3 import generate_presigned_url
-from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
+from backend.llm_rerank import (
+    llm_rerank_results,
+    is_llm_rerank_enabled,
+    get_llm_rerank_candidates,
+)
 from frontend.app import (
     AboutThisDemo,
     ChatResult,
@@ -52,6 +61,9 @@ from frontend.app import (
     UploadSidebar,
     UploadSuccess,
     UploadError,
+    VisualSearchPage,
+    VisualSearchResultGrid,
+    PageDetailContent,
 )
 from frontend.layout import Layout
 import uvicorn
@@ -69,17 +81,13 @@ overlayscrollbars_link = Link(
     href=get("app", "cdn", "overlayscrollbars_css"),
     type="text/css",
 )
-overlayscrollbars_js = Script(
-    src=get("app", "cdn", "overlayscrollbars_js")
-)
+overlayscrollbars_js = Script(src=get("app", "cdn", "overlayscrollbars_js"))
 awesomplete_link = Link(
     rel="stylesheet",
     href=get("app", "cdn", "awesomplete_css"),
     type="text/css",
 )
-awesomplete_js = Script(
-    src=get("app", "cdn", "awesomplete_js")
-)
+awesomplete_js = Script(src=get("app", "cdn", "awesomplete_js"))
 sselink = Script(
     src=get("app", "cdn", "htmx_sse_js"),
     integrity=get("app", "cdn", "htmx_sse_integrity"),
@@ -240,7 +248,9 @@ async def post(
         max_tag_length = get("app", "validation", "max_tag_length")
         for tag in tag_list:
             if len(tag) > max_tag_length:
-                return UploadError(f"Each tag must be {max_tag_length} characters or less")
+                return UploadError(
+                    f"Each tag must be {max_tag_length} characters or less"
+                )
 
     # Validate title length
     max_title_length = get("app", "validation", "max_title_length")
@@ -394,8 +404,12 @@ async def get(session, request, query: str, ranking: str, rerank: str = "true"):
             "doc_id": r["fields"].get("id", ""),
             "title": r["fields"].get("title", "Unknown"),
             "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
-            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+            "snippet": (r["fields"].get("snippet", "") or "")[
+                : get("image", "truncation", "snippet_length")
+            ],
+            "text": (r["fields"].get("text", "") or "")[
+                : get("image", "truncation", "text_length")
+            ],
         }
         for r in search_results
     ]
@@ -418,6 +432,287 @@ def get_results_children(result):
         else []
     )
     return search_results
+
+
+# =============================================================================
+# Visual Document Search Routes
+# =============================================================================
+
+
+@rt("/visual-search")
+def get(request, query: str = ""):
+    """Render the visual document search page."""
+    return Layout(Main(VisualSearchPage(query=query), cls="border-t h-full"))
+
+
+@rt("/visual-search/results")
+async def get(request, query: str = ""):
+    """Fetch visual search results (HTMX endpoint)."""
+    if not query:
+        return Div(
+            Div(
+                P(
+                    "Enter a question to search your documents",
+                    cls="text-lg font-medium text-muted-foreground",
+                ),
+                cls="flex flex-col items-center justify-center py-16",
+            ),
+            id="visual-search-results",
+        )
+
+    # Generate query ID
+    query_id = generate_query_id(query, "hybrid")
+
+    # Run embedding inference
+    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
+        query
+    )
+
+    start = time.perf_counter()
+    result = await vespa_app.get_result_from_query(
+        query=query,
+        q_embs=q_embs,
+        ranking="hybrid",
+        idx_to_token=idx_to_token,
+        rerank=True,
+        rerank_hits=get("search", "rerank_hits"),
+        final_hits=20,  # Return more results for visual search
+    )
+    search_time = time.perf_counter() - start
+
+    total_count = result.get("root", {}).get("fields", {}).get("totalCount", 0)
+    search_results = vespa_app.results_to_search_results(result, idx_to_token)
+
+    # Cache metadata for synthesis
+    _query_result_metadata[str(query_id)] = [
+        {
+            "doc_id": r["fields"].get("id", ""),
+            "title": r["fields"].get("title", "Unknown"),
+            "page_number": r["fields"].get("page_number", 0) + 1,
+            "snippet": (r["fields"].get("snippet", "") or "")[
+                : get("image", "truncation", "snippet_length")
+            ],
+            "text": (r["fields"].get("text", "") or "")[
+                : get("image", "truncation", "text_length")
+            ],
+        }
+        for r in search_results
+    ]
+
+    # Trigger background image downloads
+    doc_ids = [r["fields"]["id"] for r in search_results]
+    _download_images_bg(doc_ids)
+
+    return VisualSearchResultGrid(
+        results=search_results,
+        query=query,
+        query_id=str(query_id),
+        search_time=search_time,
+        total_count=total_count,
+    )
+
+
+@app.get("/visual-search/page-detail")
+async def get_page_detail(doc_id: str = ""):
+    """Get full page details for the modal."""
+    if not doc_id:
+        return Div(P("Document not found", cls="text-muted-foreground p-4"))
+
+    # Query Vespa for document details
+    try:
+        schema = get("vespa", "schema_name")
+        connection_count = get("vespa", "connection_count")
+        async with vespa_app.app.asyncio(connections=connection_count) as session:
+            response = await session.query(
+                body={
+                    "yql": f'select * from {schema} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "hits": 1,
+                },
+            )
+            if not response.is_successful():
+                return Div(P("Document not found", cls="text-muted-foreground p-4"))
+
+            children = response.json.get("root", {}).get("children", [])
+            if not children:
+                return Div(P("Document not found", cls="text-muted-foreground p-4"))
+
+            fields = children[0].get("fields", {})
+            return PageDetailContent(doc_id=doc_id, fields=fields, is_selected=False)
+    except Exception as e:
+        logger.error(
+            f"Error fetching page detail for doc_id={doc_id}: {e}", exc_info=True
+        )
+        return Div(P("Error loading document", cls="text-red-500 p-4"))
+
+
+async def synthesis_generator(query: str, doc_ids: list):
+    """Generator function to yield SSE messages for answer synthesis."""
+    images = []
+    max_wait = get("image", "max_wait_chat_seconds")
+    start_time = time.time()
+
+    # Wait for images to be ready
+    while len(images) < len(doc_ids) and time.time() - start_time < max_wait:
+        images = []
+        for doc_id in doc_ids:
+            image_filename = IMG_DIR / f"{doc_id}.jpg"
+            if not os.path.exists(image_filename):
+                # Try to download
+                try:
+                    image_data = await vespa_app.get_full_image_from_vespa(doc_id)
+                    with open(image_filename, "wb") as f:
+                        f.write(base64.b64decode(image_data))
+                except Exception as e:
+                    logger.warning(f"Could not download image for {doc_id}: {e}")
+                    continue
+            images.append((doc_id, Image.open(image_filename)))
+
+        if len(images) < len(doc_ids):
+            await asyncio.sleep(get("image", "poll_sleep_seconds"))
+
+    if not images:
+        yield "event: message\ndata: <p class='text-red-500'>Failed to load images for synthesis.</p>\n\n"
+        yield "event: close\ndata: \n\n"
+        return
+
+    yield f"event: message\ndata: <div class='flex items-center gap-2 text-muted-foreground'><div class='animate-spin rounded-full h-4 w-4 border-b-2 border-primary'></div><span>Analyzing {len(images)} pages...</span></div>\n\n"
+
+    is_remote = is_remote_api(LLM_BASE_URL) or LLM_API_KEY
+    if is_remote and not LLM_API_KEY:
+        yield "event: message\ndata: <p class='text-red-500'>No API key configured. AI synthesis is unavailable.</p>\n\n"
+        yield "event: close\ndata: \n\n"
+        return
+
+    def replace_newline_with_br(text):
+        return text.replace("\n", "<br>")
+
+    # Build document context
+    doc_metadata = []
+    for doc_id, _ in images:
+        for meta in _query_result_metadata.values():
+            for m in meta:
+                if m.get("doc_id") == doc_id:
+                    doc_metadata.append(m)
+                    break
+
+    context_lines = []
+    for i, meta in enumerate(doc_metadata[: len(images)]):
+        context_lines.append(
+            f'- Document {i + 1}: "{meta.get("title", "Unknown")}" — Page {meta.get("page_number", 0)}'
+        )
+        if meta.get("text"):
+            context_lines.append(
+                f"  Text extract: {meta['text'][: get('image', 'truncation', 'snippet_length')]}"
+            )
+    doc_context = (
+        "\n".join(context_lines) if context_lines else "No metadata available."
+    )
+
+    # Build image content blocks
+    content_parts = []
+    for i, (doc_id, img) in enumerate(images):
+        meta_label = ""
+        if i < len(doc_metadata):
+            m = doc_metadata[i]
+            meta_label = f'[Document {i + 1}: "{m.get("title", "Unknown")}", Page {m.get("page_number", 0)}]'
+        if meta_label:
+            content_parts.append({"type": "text", "text": meta_label})
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            }
+        )
+
+    content_parts.append(
+        {
+            "type": "text",
+            "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}",
+        }
+    )
+
+    headers = build_auth_headers(LLM_API_KEY)
+
+    # Build sources section HTML
+    sources_html = "<div class='mt-4 pt-4 border-t'><p class='text-sm font-semibold mb-2'>Sources:</p><div class='flex flex-wrap gap-2'>"
+    for i, (doc_id, img) in enumerate(images):
+        title = (
+            doc_metadata[i].get("title", "Unknown")
+            if i < len(doc_metadata)
+            else "Unknown"
+        )
+        page = doc_metadata[i].get("page_number", 0) if i < len(doc_metadata) else 0
+        # Create thumbnail chip
+        buf = io.BytesIO()
+        thumb = img.copy()
+        thumb.thumbnail((60, 80))
+        thumb.save(buf, format="JPEG", quality=70)
+        thumb_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        sources_html += f"<div class='inline-flex items-center gap-1 px-2 py-1 bg-muted rounded text-xs'><img src='data:image/jpeg;base64,{thumb_b64}' class='w-6 h-8 object-cover rounded'/><span>{title[:20]}{'...' if len(title) > 20 else ''}, p.{page}</span></div>"
+    sources_html += "</div></div>"
+
+    response_text = ""
+    try:
+        async with httpx.AsyncClient(
+            timeout=get("llm", "http_timeout_seconds")
+        ) as client:
+            async with client.stream(
+                "POST",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers=headers,
+                json={
+                    "model": CHAT_MODEL,
+                    "stream": True,
+                    "messages": [
+                        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                        {"role": "user", "content": content_parts},
+                    ],
+                },
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: ") :]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+                        text = delta.get("content", "")
+                        if text:
+                            response_text += text
+                            yield f"event: message\ndata: <div class='prose prose-sm dark:prose-invert'>{replace_newline_with_br(response_text)}</div>{sources_html}\n\n"
+                            await asyncio.sleep(get("llm", "streaming_sleep_seconds"))
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
+    except Exception as e:
+        logger.error(f"Synthesis LLM streaming failed: {e}", exc_info=True)
+        yield "event: message\ndata: <p class='text-red-500'>Error generating answer.</p>\n\n"
+
+    yield "event: close\ndata: \n\n"
+
+
+@app.get("/visual-search/synthesize")
+async def synthesize_answer(query: str = "", doc_ids: str = ""):
+    """SSE endpoint for synthesizing answers from selected pages."""
+    if not query or not doc_ids:
+
+        async def error_gen():
+            yield "event: message\ndata: <p class='text-red-500'>Query and document selection required.</p>\n\n"
+            yield "event: close\ndata: \n\n"
+
+        return StreamingResponse(error_gen(), media_type="text/event-stream")
+
+    doc_id_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
+    return StreamingResponse(
+        synthesis_generator(query=query, doc_ids=doc_id_list),
+        media_type="text/event-stream",
+    )
 
 
 async def poll_vespa_keepalive():
@@ -478,7 +773,9 @@ def _download_images_bg(doc_ids):
                     f.write(base64.b64decode(image_data))
                 logger.debug(f"Background download: saved {doc_id}")
             except Exception as e:
-                logger.error(f"Background image download failed for {doc_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Background image download failed for {doc_id}: {e}", exc_info=True
+                )
 
 
 @app.get("/get_sim_map")
@@ -588,13 +885,17 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     # Build document context from cached metadata
     doc_metadata = _query_result_metadata.get(query_id, [])
     context_lines = []
-    for i, meta in enumerate(doc_metadata[:len(images)]):
+    for i, meta in enumerate(doc_metadata[: len(images)]):
         context_lines.append(
-            f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
+            f'- Document {i + 1}: "{meta["title"]}" — Page {meta["page_number"]}'
         )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
-    doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
+            context_lines.append(
+                f"  Text extract: {meta['text'][: get('image', 'truncation', 'snippet_length')]}"
+            )
+    doc_context = (
+        "\n".join(context_lines) if context_lines else "No metadata available."
+    )
 
     # Build image content blocks for OpenAI-compatible vision API
     content_parts = []
@@ -602,24 +903,33 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         meta_label = ""
         if i < len(doc_metadata):
             m = doc_metadata[i]
-            meta_label = f"[Document {i+1}: \"{m['title']}\", Page {m['page_number']}]"
+            meta_label = f'[Document {i + 1}: "{m["title"]}", Page {m["page_number"]}]'
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        content_parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            }
+        )
 
-    content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
+    content_parts.append(
+        {
+            "type": "text",
+            "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}",
+        }
+    )
 
     headers = build_auth_headers(LLM_API_KEY)
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+        async with httpx.AsyncClient(
+            timeout=get("llm", "http_timeout_seconds")
+        ) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -637,7 +947,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
-                    data = line[len("data: "):]
+                    data = line[len("data: ") :]
                     if data.strip() == "[DONE]":
                         break
                     try:
@@ -722,27 +1032,33 @@ async def api_search(request):
     for idx, sr in enumerate(search_results):
         fields = sr.get("fields", {})
         relevance = sr.get("relevance", 0)
-        results_json.append({
-            "id": fields.get("id", ""),
-            "title": fields.get("title", ""),
-            "page_number": fields.get("page_number", 0),
-            "snippet": fields.get("snippet", ""),
-            "text": fields.get("text", ""),
-            "blur_image": fields.get("blur_image", ""),
-            "relevance": relevance,
-            "url": fields.get("url", ""),
-            "has_original_pdf": bool(fields.get("s3_key", "")),
-        })
+        results_json.append(
+            {
+                "id": fields.get("id", ""),
+                "title": fields.get("title", ""),
+                "page_number": fields.get("page_number", 0),
+                "snippet": fields.get("snippet", ""),
+                "text": fields.get("text", ""),
+                "blur_image": fields.get("blur_image", ""),
+                "relevance": relevance,
+                "url": fields.get("url", ""),
+                "has_original_pdf": bool(fields.get("s3_key", "")),
+            }
+        )
 
-    return JSONResponse({
-        "results": results_json,
-        "query": query,
-        "query_id": str(query_id),
-        "doc_ids": doc_ids,
-        "ranking": ranking,
-        "duration_ms": duration_ms,
-        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
-    })
+    return JSONResponse(
+        {
+            "results": results_json,
+            "query": query,
+            "query_id": str(query_id),
+            "doc_ids": doc_ids,
+            "ranking": ranking,
+            "duration_ms": duration_ms,
+            "total_count": result.get("root", {})
+            .get("fields", {})
+            .get("totalCount", 0),
+        }
+    )
 
 
 @app.get("/api/full_image")
@@ -792,17 +1108,26 @@ async def get(doc_id: str = ""):
 
             s3_key = children[0].get("fields", {}).get("s3_key", "")
             if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+                return JSONResponse(
+                    {"error": "No original PDF available for this document"},
+                    status_code=404,
+                )
     except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        logger.error(
+            f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True
+        )
         return JSONResponse({"error": "Failed to look up document"}, status_code=500)
 
     # Generate presigned URL and redirect
     try:
         presigned_url = generate_presigned_url(s3_key)
     except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+        logger.error(
+            f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True
+        )
+        return JSONResponse(
+            {"error": "Failed to generate download link"}, status_code=500
+        )
 
     return RedirectResponse(presigned_url)
 
@@ -837,16 +1162,25 @@ async def api_download_url(doc_id: str = ""):
 
             s3_key = children[0].get("fields", {}).get("s3_key", "")
             if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+                return JSONResponse(
+                    {"error": "No original PDF available for this document"},
+                    status_code=404,
+                )
     except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        logger.error(
+            f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True
+        )
         return JSONResponse({"error": "Failed to look up document"}, status_code=500)
 
     try:
         presigned_url = generate_presigned_url(s3_key)
     except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+        logger.error(
+            f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True
+        )
+        return JSONResponse(
+            {"error": "Failed to generate download link"}, status_code=500
+        )
 
     return JSONResponse({"download_url": presigned_url})
 
