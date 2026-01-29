@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getLogger, CORRELATION_HEADER, sanitizeErrorForClient } from "@/lib/logger";
+import { getBackendUrl } from "@/lib/config";
 
 const logger = getLogger("api/upload");
-const BACKEND_URL = process.env.BACKEND_URL || "http://localhost:7860";
 
 export async function POST(request: NextRequest) {
   const correlationId = request.headers.get(CORRELATION_HEADER) || "";
@@ -12,42 +12,27 @@ export async function POST(request: NextRequest) {
 
     logger.info("Upload request received", { correlationId });
 
-    const res = await fetch(`${BACKEND_URL}/upload`, {
+    const res = await fetch(`${getBackendUrl()}/api/upload`, {
       method: "POST",
       headers: { [CORRELATION_HEADER]: correlationId },
       body: formData,
     });
 
-    // The backend returns HTML fragments (FastHTML); we parse the response
-    // to determine success/failure and return JSON for the Next.js frontend.
-    const html = await res.text();
+    // The backend now returns JSON directly
+    const data = await res.json();
 
-    if (html.includes("upload-success") || html.includes("Successfully")) {
-      // Extract title and page count from the HTML if possible
-      const titleMatch = html.match(/font-semibold[^>]*>([^<]+)</);
-      const pagesMatch = html.match(/(\d+)\s*pages?\s*indexed/i);
-      logger.info("Upload succeeded", { correlationId });
-      return NextResponse.json(
-        {
-          success: true,
-          message: "Document uploaded successfully",
-          title: titleMatch?.[1] || "Document",
-          pages_indexed: pagesMatch ? parseInt(pagesMatch[1], 10) : 0,
-        },
-        { headers: { [CORRELATION_HEADER]: correlationId } }
-      );
+    if (data.success) {
+      logger.info("Upload succeeded", { correlationId, title: data.title, pages: data.pages_indexed });
+      return NextResponse.json(data, { headers: { [CORRELATION_HEADER]: correlationId } });
     }
 
-    // Try to extract error message
-    const errorMatch = html.match(/text-destructive[^>]*>([^<]+)</);
-    const errorMessage = errorMatch?.[1] || "Upload failed";
     logger.warn("Upload returned error from backend", {
-      errorMessage,
+      errorMessage: data.error,
       correlationId,
     });
     return NextResponse.json(
-      { success: false, error: errorMessage, correlationId },
-      { status: 400, headers: { [CORRELATION_HEADER]: correlationId } }
+      { success: false, error: data.error, correlationId },
+      { status: res.status, headers: { [CORRELATION_HEADER]: correlationId } }
     );
   } catch (e) {
     logger.error("Upload route error", { error: e, correlationId });

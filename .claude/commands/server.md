@@ -1,5 +1,5 @@
 ---
-description: Start the FastHTML development server with optional hot reload
+description: Start the backend API server with optional hot reload
 ---
 
 ## User Input
@@ -10,7 +10,7 @@ $ARGUMENTS
 
 ## Outline
 
-Start the FastHTML/Uvicorn development server **in the background** for the colpali-vespa application. All output logged to `logs/server.log` with active monitoring.
+Start the Starlette/Uvicorn API server **in the background** for the colpali-vespa application. All output logged to `logs/server.log` with active monitoring.
 
 1. **Setup logging (rotate to prevent bloat)**:
    ```bash

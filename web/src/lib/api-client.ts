@@ -69,9 +69,9 @@ export async function searchDocuments(
     signal,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Search failed" }));
+    const err = await res.json();
     logger.error("Search request failed", { status: res.status, error: err.error });
-    throw new Error(err.error || "Search failed");
+    throw new Error(err.error || `Search failed with status ${res.status}`);
   }
   return res.json();
 }
@@ -84,9 +84,16 @@ export async function getSuggestions(
     `/api/suggestions?query=${encodeURIComponent(query)}`,
     { signal, headers: { ...correlationHeaders() } }
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    const err = await res.json();
+    logger.error("Suggestions request failed", { status: res.status, error: err.error });
+    throw new Error(err.error || `Suggestions failed with status ${res.status}`);
+  }
   const data = await res.json();
-  return data.suggestions ?? [];
+  if (!data.suggestions) {
+    throw new Error("Invalid suggestions response: missing suggestions field");
+  }
+  return data.suggestions;
 }
 
 export async function getFullImage(docId: string): Promise<string> {
@@ -130,9 +137,9 @@ export async function uploadDocument(
     signal,
   });
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Upload failed" }));
+    const err = await res.json();
     logger.error("Upload request failed", { status: res.status, error: err.error });
-    throw new Error(err.error || "Upload failed");
+    throw new Error(err.error || `Upload failed with status ${res.status}`);
   }
   return res.json();
 }

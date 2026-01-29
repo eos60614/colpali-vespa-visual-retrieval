@@ -1,11 +1,13 @@
 # API Contract: File Upload Endpoints
 
+> **Note**: This contract was written for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). The upload endpoint now returns JSON instead of HTML.
+
 **Feature**: 002-file-upload-ingest
 **Date**: 2026-01-14
 
 ## Overview
 
-REST-like endpoints for the file upload and ingestion feature, following existing FastHTML patterns.
+JSON API endpoint for the file upload and ingestion feature.
 
 ---
 
@@ -115,23 +117,25 @@ finance, annual, 2024
 
 ---
 
-## HTMX Integration
+## Frontend Integration
 
-The upload form uses HTMX for seamless interaction:
+The upload form uses Next.js with fetch API for async submission:
 
-```html
-<form hx-post="/upload"
-      hx-encoding="multipart/form-data"
-      hx-target="#upload-result"
-      hx-swap="innerHTML">
-  <!-- form fields -->
-</form>
-<div id="upload-result"></div>
+```typescript
+const formData = new FormData();
+formData.append('file', file);
+formData.append('title', title);
+
+const response = await fetch('/api/upload', {
+  method: 'POST',
+  body: formData,
+});
+const result = await response.json();
 ```
 
 **Behavior**:
-- Form submission handled via HTMX (no page reload)
-- Response HTML replaces the `#upload-result` div
+- Form submission handled via fetch API (no page reload)
+- JSON response indicates success/failure
 - User can upload another file without navigating away
 
 ---

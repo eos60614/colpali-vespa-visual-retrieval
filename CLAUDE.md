@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Visual document retrieval system combining ColPali (vision-language model) embeddings with Vespa search. Users upload PDFs or search existing documents using text queries matched against visual page embeddings. An AI chat sidebar provides natural language answers grounded in search results. A multi-step agent can iteratively search and reason over documents.
 
-**Tech stack:** Python 3.12, FastHTML, HTMX, ColQwen2.5 (colpali-engine), Vespa 8, PyMuPDF, Tailwind CSS.
+**Tech stack:** Python 3.12, Starlette (JSON API backend), Next.js 16/React 19 (frontend), ColQwen2.5 (colpali-engine), Vespa 8, PyMuPDF, TypeScript.
 
 ## Commands
 
@@ -49,7 +49,7 @@ Development slash commands are defined in `.claude/commands/`. Key ones:
 - **`/lint`** — Run ruff linter with full context, logs to `logs/lint.log`
 - **`/lint-fix`** — Auto-fix linting issues with `ruff check --fix` + `ruff format`, logs to `logs/lint-fix.log`
 - **`/test`** — Run pytest with `-v -x --tb=short`, supports `-k` pattern matching, logs to `logs/test.log`
-- **`/server`** — Start FastHTML dev server in background (port 7860), pre-flight checks for Vespa/port availability, logs to `logs/server.log`
+- **`/server`** — Start backend dev server in background (port 7860), pre-flight checks for Vespa/port availability, logs to `logs/server.log`
 - **`/debug`** — Search git branches for existing fixes to similar issues
 
 All slash commands detect and activate the virtual environment (`venv/`, `.venv/`, or `env/`), log output to `logs/`, and use the Read tool to check results (preserving context window).
@@ -61,7 +61,7 @@ SpecKit workflow commands (`/speckit.*`) are also available for feature specific
 ### Request Flow
 
 ```
-Browser → HTMX requests → FastHTML (main.py)
+Browser → Next.js (web/) → JSON API routes → Starlette (main.py)
   ├── SimMapGenerator (colpali.py) → ColQwen2.5 model → query embeddings
   ├── VespaQueryClient (vespa_app.py) → Vespa (HNSW + BM25)
   ├── rerank.py → application-level MaxSim reranking (NumPy)
@@ -71,7 +71,7 @@ Browser → HTMX requests → FastHTML (main.py)
 
 ### Key Modules
 
-**`main.py`** — FastHTML app entry point. All routes defined here. Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `message_generator()` for SSE chat streaming via httpx.
+**`main.py`** — Starlette ASGI app entry point. Pure JSON API backend — all routes return `JSONResponse` or `StreamingResponse` (SSE). Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `message_generator()` for SSE chat streaming via httpx. Key API routes: `/api/search`, `/api/visual-search`, `/api/upload`, `/api/sim-map`, `/api/synthesize`, `/get-message`.
 
 **`backend/config.py`** — Centralized configuration loader. Reads non-sensitive config from `ki55.toml` at import time. Provides `get(*keys)` for nested TOML traversal (e.g., `get("llm", "chat_model")`), `require_env()` for mandatory env vars, and `get_env()` for optional ones. All config access across the codebase goes through this module.
 
@@ -95,11 +95,7 @@ Browser → HTMX requests → FastHTML (main.py)
 
 **`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
-**`frontend/app.py`** — All UI components as PascalCase functions returning FastHTML elements. Key components: `Home`, `Search`, `SearchResult`, `ChatResult`, `UploadPage`, `SimMapButtonPoll`/`SimMapButtonReady`.
-
-**`frontend/layout.py`** — Page layout template, responsive grid JS (1-col mobile, 2-col desktop at 45fr/15fr), scrollbar initialization, theme toggle.
-
-**`web/`** — Separate Next.js/React frontend (TypeScript). Runs on port 3000 (`npm run dev`). Independent from the FastHTML app — shares the same backend APIs but provides an alternative UI.
+**`web/`** — Next.js 16/React 19 frontend (TypeScript). Primary UI for the application. Runs on port 3000 (`npm run dev`). Consumes JSON APIs from `main.py`. Key features: visual search with multi-select synthesis, similarity map viewer, document upload, streaming AI chat. See `web/CLAUDE.md` for detailed frontend documentation.
 
 ### Embedding & Ranking Pipeline
 
@@ -142,10 +138,9 @@ All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve
 - Logging via stdlib `logging` (not loguru). Non-sensitive config in `ki55.toml` via `backend/config.py`; secrets in `.env` via `python-dotenv`.
 - No ORM — raw asyncpg with parameterized queries for Procore DB.
 - Vespa documents fed via pyvespa client library.
-- Git LFS for large binaries (model weights, `tailwindcss` binary, demo images) — see `.gitattributes`.
-- Frontend components are PascalCase functions; backend helpers are snake_case.
-- FastHTML routes use `@rt()` decorator for GET/POST, `@app.get()` for explicit GET.
-- Tailwind CSS compiled via `tailwindcss` binary (Git LFS tracked). Config in `tailwind.config.js` references shad4fast components from venv.
+- Git LFS for large binaries (model weights, demo images) — see `.gitattributes`.
+- Backend helpers are snake_case; frontend components are PascalCase.
+- Starlette routes defined via `Route()` list — all return JSON or SSE streams.
 - Ruff uses default config — no `pyproject.toml` or `ruff.toml` customization.
 - No CI/CD pipelines — testing and linting run via slash commands or manually.
 
@@ -175,7 +170,10 @@ pip install -r requirements-local.txt              # ruff, pymupdf, reportlab
 python -m spacy download en_core_web_sm
 cp .env.example .env                              # Configure LLM provider
 python scripts/feed_data.py --sample              # Index sample data
-python main.py                                    # http://localhost:7860
+python main.py                                    # Backend API: http://localhost:7860
+
+# Frontend (separate terminal)
+cd web && npm install && npm run dev              # Next.js: http://localhost:3000
 ```
 
 Docker ports: 8080 (query/feed API), 19071 (config server).

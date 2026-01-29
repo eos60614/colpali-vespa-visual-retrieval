@@ -1,33 +1,25 @@
+"""
+Backend API server for the visual document retrieval system.
+
+Provides JSON REST APIs for the Next.js frontend.
+"""
 import asyncio
 import base64
 import io
 import json
 import os
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx
+import uvicorn
 from fastcore.parallel import threaded
-from fasthtml.common import (
-    Aside,
-    Div,
-    FileResponse,
-    HighlightJS,
-    Img,
-    JSONResponse,
-    Link,
-    Main,
-    P,
-    RedirectResponse,
-    Script,
-    StreamingResponse,
-    UploadFile,
-    fast_app,
-)
 from PIL import Image
-from shad4fast import ShadHead
+from starlette.applications import Starlette
+from starlette.middleware import Middleware
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.routing import Route
 from vespa.application import Vespa
 
 from backend.config import get
@@ -39,83 +31,17 @@ from backend.vespa_app import VespaQueryClient
 from backend.ingest import ingest_pdf, validate_pdf
 from backend.s3 import generate_presigned_url
 from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
-from frontend.app import (
-    AboutThisDemo,
-    ChatResult,
-    Home,
-    Search,
-    SearchBox,
-    SearchResult,
-    SimMapButtonPoll,
-    SimMapButtonReady,
-    UploadPage,
-    UploadSidebar,
-    UploadSuccess,
-    UploadError,
-)
-from frontend.layout import Layout
-import uvicorn
 
-highlight_js_theme_link = Link(id="highlight-theme", rel="stylesheet", href="")
-highlight_js_theme = Script(src="/static/js/highlightjs-theme.js")
-highlight_js = HighlightJS(
-    langs=["python", "javascript", "java", "json", "xml"],
-    dark="github-dark",
-    light="github",
-)
-
-overlayscrollbars_link = Link(
-    rel="stylesheet",
-    href=get("app", "cdn", "overlayscrollbars_css"),
-    type="text/css",
-)
-overlayscrollbars_js = Script(
-    src=get("app", "cdn", "overlayscrollbars_js")
-)
-awesomplete_link = Link(
-    rel="stylesheet",
-    href=get("app", "cdn", "awesomplete_css"),
-    type="text/css",
-)
-awesomplete_js = Script(
-    src=get("app", "cdn", "awesomplete_js")
-)
-sselink = Script(
-    src=get("app", "cdn", "htmx_sse_js"),
-    integrity=get("app", "cdn", "htmx_sse_integrity"),
-    crossorigin="anonymous",
-)
-
-# Initialize centralized logging (structured JSON in production, readable in dev)
+# Initialize centralized logging
 LOG_LEVEL = get("app", "log_level").upper()
 configure_logging(log_level=LOG_LEVEL, service="vespa_app")
 logger = get_logger("vespa_app")
 
-app, rt = fast_app(
-    htmlkw={"cls": "grid h-full"},
-    pico=False,
-    hdrs=(
-        highlight_js,
-        highlight_js_theme_link,
-        highlight_js_theme,
-        overlayscrollbars_link,
-        overlayscrollbars_js,
-        awesomplete_link,
-        awesomplete_js,
-        sselink,
-        ShadHead(tw_cdn=False, theme_handle=True),
-    ),
-)
-
-# Install ASGI middleware: error boundary (outermost) → correlation ID → app
-# Keep `app` as the FastHTML instance for route registration and attribute access.
-# `asgi_app` is the ASGI callable with middleware, used by uvicorn.
-asgi_app = CorrelationIdMiddleware(app)
-asgi_app = ErrorBoundaryMiddleware(asgi_app)
-
+# Global instances
 vespa_app: Vespa = VespaQueryClient(logger=logger)
 thread_pool = ThreadPoolExecutor()
-# Chat LLM config (OpenRouter, OpenAI, or local Ollama — all expose OpenAI-compatible API)
+
+# Chat LLM config
 LLM_BASE_URL, LLM_API_KEY = resolve_llm_config()
 CHAT_MODEL = get_chat_model()
 CHAT_SYSTEM_PROMPT = """You are a document research assistant. You MUST answer the user's question using ONLY the provided document pages. Do NOT use outside knowledge.
@@ -132,305 +58,57 @@ RESPONSE FORMAT:
 - Do NOT include backticks (`) or markdown formatting.
 - End your response with a <b>Sources</b> section listing each document and page you referenced.
 """
+
+# Paths
 STATIC_DIR = Path(get("app", "static_dir"))
 IMG_DIR = Path(get("app", "img_dir"))
 SIM_MAP_DIR = Path(get("app", "sim_map_dir"))
 os.makedirs(IMG_DIR, exist_ok=True)
 os.makedirs(SIM_MAP_DIR, exist_ok=True)
 
+MAX_FILE_SIZE = get("app", "max_file_size_mb") * 1024 * 1024
+
 # In-memory cache: query_id -> list of doc metadata dicts for chat grounding
 _query_result_metadata: dict[str, list[dict]] = {}
 
-
-@app.on_event("startup")
-def load_model_on_startup():
-    app.sim_map_generator = SimMapGenerator(logger=logger)
-    return
+# Sim map generator (initialized at startup)
+sim_map_generator: SimMapGenerator | None = None
 
 
-@app.on_event("startup")
-async def keepalive():
-    asyncio.create_task(poll_vespa_keepalive())
-    return
-
-
-def generate_query_id(query, ranking_value):
+def generate_query_id(query: str, ranking_value: str) -> int:
     hash_input = (query + ranking_value).encode("utf-8")
     return hash(hash_input)
 
 
-@rt("/static/{filepath:path}")
-def serve_static(filepath: str):
-    return FileResponse(STATIC_DIR / filepath)
+# =============================================================================
+# Startup/shutdown handlers
+# =============================================================================
 
-
-@rt("/")
-def get(session):
-    if "session_id" not in session:
-        session["session_id"] = str(uuid.uuid4())
-    return Layout(Main(Home()), is_home=True)
-
-
-@rt("/about-this-demo")
-def get():
-    return Layout(Main(AboutThisDemo()))
-
-
-MAX_FILE_SIZE = get("app", "max_file_size_mb") * 1024 * 1024
-
-
-@rt("/upload")
-def get():
-    """Render the upload page."""
-    return Layout(
-        Main(UploadPage(), cls="border-t"),
-        Aside(
-            UploadSidebar(),
-            cls="border-t border-l hidden md:block",
-        ),
-    )
-
-
-@rt("/upload")
-async def post(
-    pdf_file: UploadFile,
-    title: str = "",
-    description: str = "",
-    tags: str = "",
-    detect_regions: str = "",
-    use_vlm: str = "",
-):
-    """Handle PDF file upload and ingestion."""
-    # Check if file was provided
-    if pdf_file is None or pdf_file.filename == "":
-        logger.warning("Upload attempted without file")
-        return UploadError("Please select a PDF file")
-
-    # Read file content
-    try:
-        file_bytes = await pdf_file.read()
-    except Exception as e:
-        logger.error(f"Error reading uploaded file: {e}", exc_info=True)
-        return UploadError("Error reading uploaded file")
-
-    # Validate file size
-    if len(file_bytes) > MAX_FILE_SIZE:
-        logger.warning(f"File too large: {len(file_bytes)} bytes")
-        return UploadError("File exceeds 250MB size limit")
-
-    # Validate file is a PDF
-    if not pdf_file.filename.lower().endswith(".pdf"):
-        return UploadError("Only PDF files are accepted")
-
-    # Validate PDF integrity
-    is_valid, validation_msg = validate_pdf(file_bytes)
-    if not is_valid:
-        logger.warning(f"PDF validation failed: {validation_msg}")
-        return UploadError(validation_msg)
-
-    # Parse tags
-    tag_list = []
-    if tags.strip():
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
-        # Validate tag count
-        max_tags = get("app", "validation", "max_tags")
-        if len(tag_list) > max_tags:
-            return UploadError(f"Maximum {max_tags} tags allowed")
-        # Validate individual tag length
-        max_tag_length = get("app", "validation", "max_tag_length")
-        for tag in tag_list:
-            if len(tag) > max_tag_length:
-                return UploadError(f"Each tag must be {max_tag_length} characters or less")
-
-    # Validate title length
-    max_title_length = get("app", "validation", "max_title_length")
-    if len(title) > max_title_length:
-        return UploadError(f"Title must be {max_title_length} characters or less")
-
-    # Validate description length
-    max_desc_length = get("app", "validation", "max_description_length")
-    if len(description) > max_desc_length:
-        return UploadError(f"Description must be {max_desc_length} characters or less")
-
-    # Get the ColPali model from the app
-    sim_map_gen = app.sim_map_generator
-    model = sim_map_gen.model
-    processor = sim_map_gen.processor
-    device = sim_map_gen.device
-
-    # Get Vespa app
-    vespa = vespa_app.app
-
-    # Process the PDF
-    enable_regions = detect_regions.lower() in ("on", "true", "1", "yes")
-    enable_vlm = use_vlm.lower() in ("on", "true", "1", "yes")
-
-    try:
-        success, message, pages_indexed = ingest_pdf(
-            file_bytes=file_bytes,
-            filename=pdf_file.filename,
-            vespa_app=vespa,
-            model=model,
-            processor=processor,
-            device=device,
-            title=title if title.strip() else None,
-            description=description,
-            tags=tag_list,
-            detect_drawing_regions=enable_regions,
-            use_vlm_detection=enable_vlm,
-        )
-    except Exception as e:
-        logger.error(f"Error processing PDF: {e}", exc_info=True)
-        return UploadError("Error processing document. Please try again.")
-
-    if success:
-        final_title = title.strip() if title.strip() else Path(pdf_file.filename).stem
-        logger.info(f"Successfully uploaded: {final_title} ({pages_indexed} pages)")
-        return UploadSuccess(title=final_title, pages_indexed=pages_indexed)
-    else:
-        logger.error(f"Upload failed: {message}")
-        return UploadError(message)
-
-
-@rt("/search")
-def get(request, query: str = "", ranking: str = "hybrid"):
-    logger.info(f"/search: Fetching results for query: {query}, ranking: {ranking}")
-
-    # Always render the SearchBox first
-    if not query:
-        # Show SearchBox and a message for missing query
-        return Layout(
-            Main(
-                Div(
-                    SearchBox(query_value=query, ranking_value=ranking),
-                    Div(
-                        P(
-                            "No query provided. Please enter a query.",
-                            cls="text-center text-muted-foreground",
-                        ),
-                        cls="p-10",
-                    ),
-                    cls="grid",
-                )
-            )
-        )
-    # Generate a unique query_id based on the query and ranking value
-    query_id = generate_query_id(query, ranking)
-    # Show the loading message if a query is provided
-    return Layout(
-        Main(Search(request), data_overlayscrollbars_initialize=True, cls="border-t"),
-        Aside(
-            ChatResult(query_id=query_id, query=query),
-            cls="border-t border-l hidden md:block",
-        ),
-    )  # Show SearchBox and Loading message initially
-
-
-@rt("/fetch_results")
-async def get(session, request, query: str, ranking: str, rerank: str = "true"):
-    if "hx-request" not in request.headers:
-        return RedirectResponse("/search")
-
-    # Parse rerank parameter (default to True for better results)
-    do_rerank = rerank.lower() in ("true", "1", "yes")
-    do_llm_rerank = is_llm_rerank_enabled()
-    final_hits = get("search", "final_hits")
-
-    # Get the hash of the query and ranking value
-    query_id = generate_query_id(query, ranking)
-    logger.info(
-        f"Query id in /fetch_results: {query_id}, rerank: {do_rerank}, llm_rerank: {do_llm_rerank}"
-    )
-    # Run the embedding and query against Vespa app
-    start_inference = time.perf_counter()
-    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
-        query
-    )
-    end_inference = time.perf_counter()
-    logger.info(
-        f"Inference time for query_id: {query_id} \t {end_inference - start_inference:.2f} seconds"
-    )
-
-    # When LLM reranking is enabled, get more candidates from MaxSim so the
-    # LLM has a richer set to reorder before we take the final top results.
-    maxsim_final_hits = get_llm_rerank_candidates() if do_llm_rerank else final_hits
-
-    start = time.perf_counter()
-    # Fetch real search results from Vespa
-    result = await vespa_app.get_result_from_query(
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        rerank=do_rerank,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=maxsim_final_hits,  # More candidates when LLM reranking follows
-    )
-    end = time.perf_counter()
-    logger.info(
-        f"Search results fetched in {end - start:.2f} seconds. Vespa search time: {result['timing']['searchtime']}"
-    )
-
-    # Optional LLM reranking pass on MaxSim candidates
-    if do_llm_rerank and result.get("root", {}).get("children"):
-        start_llm = time.perf_counter()
-        result["root"]["children"] = await llm_rerank_results(
-            query=query,
-            results=result["root"]["children"],
-            top_k=final_hits,
-        )
-        end_llm = time.perf_counter()
-        logger.info(f"LLM reranking took {end_llm - start_llm:.2f} seconds")
-
-    search_time = result["timing"]["searchtime"]
-    # Safely get total_count with a default of 0
-    total_count = result.get("root", {}).get("fields", {}).get("totalCount", 0)
-
-    search_results = vespa_app.results_to_search_results(result, idx_to_token)
-
-    # Cache document metadata for chat grounding (title, page, snippet per result)
-    _query_result_metadata[str(query_id)] = [
-        {
-            "doc_id": r["fields"].get("id", ""),
-            "title": r["fields"].get("title", "Unknown"),
-            "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
-            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
-        }
-        for r in search_results
-    ]
-
-    get_and_store_sim_maps(
-        query_id=query_id,
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        doc_ids=[result["fields"]["id"] for result in search_results],
-    )
-    return SearchResult(search_results, query, query_id, search_time, total_count)
-
-
-def get_results_children(result):
-    search_results = (
-        result["root"]["children"]
-        if "root" in result and "children" in result["root"]
-        else []
-    )
-    return search_results
+async def startup():
+    """Initialize the ColPali model and start Vespa keepalive task."""
+    global sim_map_generator
+    sim_map_generator = SimMapGenerator(logger=logger)
+    asyncio.create_task(poll_vespa_keepalive())
+    logger.info("Application startup complete")
 
 
 async def poll_vespa_keepalive():
+    """Background task to keep Vespa connection alive."""
     while True:
         await asyncio.sleep(get("app", "keepalive_interval_seconds"))
         await vespa_app.keepalive()
         logger.debug(f"Vespa keepalive: {time.time()}")
 
 
+# =============================================================================
+# Background tasks
+# =============================================================================
+
 @threaded
 def get_and_store_sim_maps(
     query_id, query: str, q_embs, ranking, idx_to_token, doc_ids
 ):
+    """Generate and save similarity maps to disk in background."""
     ranking_sim = ranking + "_sim"
     vespa_sim_maps = vespa_app.get_sim_maps_from_query(
         query=query,
@@ -448,16 +126,16 @@ def get_and_store_sim_maps(
     ):
         time.sleep(poll_sleep)
     if not all([os.path.exists(img_path) for img_path in img_paths]):
-        logger.warning(f"Images not ready in 5 seconds for query_id: {query_id}")
+        logger.warning(f"Images not ready in {max_wait} seconds for query_id: {query_id}")
         return False
-    sim_map_generator = app.sim_map_generator.gen_similarity_maps(
+    sim_map_gen = sim_map_generator.gen_similarity_maps(
         query=query,
         query_embs=q_embs,
         token_idx_map=idx_to_token,
         images=img_paths,
         vespa_sim_maps=vespa_sim_maps,
     )
-    for idx, token, token_idx, blended_img_base64 in sim_map_generator:
+    for idx, token, token_idx, blended_img_base64 in sim_map_gen:
         with open(SIM_MAP_DIR / f"{query_id}_{idx}_{token_idx}.png", "wb") as f:
             f.write(base64.b64decode(blended_img_base64))
         logger.debug(
@@ -481,94 +159,460 @@ def _download_images_bg(doc_ids):
                 logger.error(f"Background image download failed for {doc_id}: {e}", exc_info=True)
 
 
-@app.get("/get_sim_map")
-async def get_sim_map(query_id: str, idx: int, token: str, token_idx: int):
-    """
-    Endpoint that each of the sim map button polls to get the sim map image
-    when it is ready. If it is not ready, returns a SimMapButtonPoll, that
-    continues to poll every 1 second.
-    """
-    sim_map_path = SIM_MAP_DIR / f"{query_id}_{idx}_{token_idx}.png"
-    if not os.path.exists(sim_map_path):
-        logger.debug(
-            f"Sim map not ready for query_id: {query_id}, idx: {idx}, token: {token}"
-        )
-        return SimMapButtonPoll(
-            query_id=query_id, idx=idx, token=token, token_idx=token_idx
-        )
-    else:
-        return SimMapButtonReady(
-            query_id=query_id,
-            idx=idx,
-            token=token,
-            token_idx=token_idx,
-            img_src=sim_map_path,
-        )
+# =============================================================================
+# API Route Handlers
+# =============================================================================
+
+async def serve_static(request):
+    """Serve static files."""
+    filepath = request.path_params.get("filepath", "")
+    return FileResponse(STATIC_DIR / filepath)
 
 
-@app.get("/full_image")
-async def full_image(doc_id: str):
-    """
-    Endpoint to get the full quality image for a given result id.
-    """
-    img_path = IMG_DIR / f"{doc_id}.jpg"
-    if not os.path.exists(img_path):
-        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
-        # image data is base 64 encoded string. Save it to disk as jpg.
-        with open(img_path, "wb") as f:
-            f.write(base64.b64decode(image_data))
-        logger.debug(f"Full image saved to disk for doc_id: {doc_id}")
-    else:
-        with open(img_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-    return Img(
-        src=f"data:image/jpeg;base64,{image_data}",
-        alt="something",
-        cls="result-image w-full h-full object-contain",
-    )
-
-
-@rt("/suggestions")
-async def get_suggestions(query: str = ""):
-    """Endpoint to get suggestions as user types in the search box"""
-    query = query.lower().strip()
-
+async def api_suggestions(request):
+    """Endpoint to get suggestions as user types in the search box."""
+    query = request.query_params.get("query", "").lower().strip()
     if query:
         suggestions = await vespa_app.get_suggestions(query)
         if len(suggestions) > 0:
             return JSONResponse({"suggestions": suggestions})
-
     return JSONResponse({"suggestions": []})
 
 
+async def api_search(request):
+    """JSON search endpoint for the Next.js frontend.
+
+    Accepts JSON body: { query, ranking? }
+    Returns JSON with search results including blur images and doc IDs.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    query = body.get("query", "").strip()
+    ranking = body.get("ranking", "hybrid")
+
+    if not query:
+        return JSONResponse({"error": "Query is required"}, status_code=400)
+
+    query_id = generate_query_id(query, ranking)
+
+    # Run embedding inference
+    q_embs, idx_to_token = sim_map_generator.get_query_embeddings_and_token_map(query)
+
+    start = time.perf_counter()
+    result = await vespa_app.get_result_from_query(
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        rerank=True,
+        rerank_hits=get("search", "rerank_hits"),
+        final_hits=get("search", "final_hits"),
+    )
+    duration_ms = round((time.perf_counter() - start) * 1000)
+
+    search_results = vespa_app.results_to_search_results(result, idx_to_token)
+
+    # Trigger background sim map + image download
+    doc_ids = [r["fields"]["id"] for r in search_results]
+    get_and_store_sim_maps(
+        query_id=query_id,
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        doc_ids=doc_ids,
+    )
+
+    # Download full images to disk in background
+    _download_images_bg(doc_ids)
+
+    # Transform Vespa results to JSON-friendly format
+    results_json = []
+    for sr in search_results:
+        fields = sr.get("fields", {})
+        relevance = sr.get("relevance", 0)
+        results_json.append({
+            "id": fields.get("id", ""),
+            "title": fields.get("title", ""),
+            "page_number": fields.get("page_number", 0),
+            "snippet": fields.get("snippet", ""),
+            "text": fields.get("text", ""),
+            "blur_image": fields.get("blur_image", ""),
+            "relevance": relevance,
+            "url": fields.get("url", ""),
+            "has_original_pdf": bool(fields.get("s3_key", "")),
+        })
+
+    return JSONResponse({
+        "results": results_json,
+        "query": query,
+        "query_id": str(query_id),
+        "doc_ids": doc_ids,
+        "ranking": ranking,
+        "duration_ms": duration_ms,
+        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
+    })
+
+
+async def api_visual_search(request):
+    """JSON endpoint for visual search results.
+
+    Accepts JSON body: { query, ranking?, limit? }
+    Returns JSON with search results including blur images, doc IDs, and token map.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    query = body.get("query", "").strip()
+    ranking = body.get("ranking", "hybrid")
+    limit = body.get("limit", 20)
+
+    if not query:
+        return JSONResponse({"error": "Query is required"}, status_code=400)
+
+    query_id = generate_query_id(query, ranking)
+
+    # Run embedding inference
+    q_embs, idx_to_token = sim_map_generator.get_query_embeddings_and_token_map(query)
+
+    start = time.perf_counter()
+    result = await vespa_app.get_result_from_query(
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        rerank=True,
+        rerank_hits=get("search", "rerank_hits"),
+        final_hits=min(limit, get("search", "final_hits")),
+    )
+    duration_ms = round((time.perf_counter() - start) * 1000)
+
+    search_results = vespa_app.results_to_search_results(result, idx_to_token)
+
+    # Trigger background sim map + image download
+    doc_ids = [r["fields"]["id"] for r in search_results]
+    get_and_store_sim_maps(
+        query_id=query_id,
+        query=query,
+        q_embs=q_embs,
+        ranking=ranking,
+        idx_to_token=idx_to_token,
+        doc_ids=doc_ids,
+    )
+
+    # Download full images to disk in background
+    _download_images_bg(doc_ids)
+
+    # Cache document metadata for chat grounding
+    _query_result_metadata[str(query_id)] = [
+        {
+            "doc_id": r["fields"].get("id", ""),
+            "title": r["fields"].get("title", "Unknown"),
+            "page_number": r["fields"].get("page_number", 0) + 1,
+            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
+            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+        }
+        for r in search_results
+    ]
+
+    # Build token map for similarity maps
+    token_map = [
+        {"token": token.replace("\u2581", ""), "token_idx": token_idx}
+        for token_idx, token in idx_to_token.items()
+    ]
+
+    # Transform Vespa results to JSON-friendly format
+    results_json = []
+    for sr in search_results:
+        fields = sr.get("fields", {})
+        relevance = sr.get("relevance", 0)
+        results_json.append({
+            "id": fields.get("id", ""),
+            "title": fields.get("title", ""),
+            "page_number": fields.get("page_number", 0),
+            "snippet": fields.get("snippet", ""),
+            "text": fields.get("text", ""),
+            "blur_image": fields.get("blur_image", ""),
+            "relevance": relevance,
+            "url": fields.get("url", ""),
+            "has_original_pdf": bool(fields.get("s3_key", "")),
+        })
+
+    return JSONResponse({
+        "results": results_json,
+        "query": query,
+        "query_id": str(query_id),
+        "doc_ids": doc_ids,
+        "ranking": ranking,
+        "duration_ms": duration_ms,
+        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
+        "token_map": token_map,
+    })
+
+
+async def api_full_image(request):
+    """JSON endpoint returning full-resolution image as base64."""
+    doc_id = request.query_params.get("doc_id", "")
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    img_path = IMG_DIR / f"{doc_id}.jpg"
+    if not os.path.exists(img_path):
+        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
+        with open(img_path, "wb") as f:
+            f.write(base64.b64decode(image_data))
+    else:
+        with open(img_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+    return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
+
+
+async def api_sim_map(request):
+    """JSON endpoint to get a similarity map image as base64.
+
+    Returns: {"ready": true, "image": "data:image/png;base64,..."}
+    Or: {"ready": false}
+    """
+    query_id = request.query_params.get("query_id", "")
+    idx = request.query_params.get("idx", "")
+    token_idx = request.query_params.get("token_idx", "")
+
+    if not query_id or not idx or not token_idx:
+        return JSONResponse({"error": "Missing required parameters"}, status_code=400)
+
+    sim_map_path = SIM_MAP_DIR / f"{query_id}_{idx}_{token_idx}.png"
+    if not os.path.exists(sim_map_path):
+        logger.debug(f"Sim map not ready for query_id: {query_id}, idx: {idx}, token_idx: {token_idx}")
+        return JSONResponse({"ready": False})
+    else:
+        with open(sim_map_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+        return JSONResponse({
+            "ready": True,
+            "image": f"data:image/png;base64,{image_data}",
+        })
+
+
+async def api_upload(request):
+    """JSON endpoint for PDF file upload and ingestion.
+
+    Returns JSON: {"success": true, "title": "...", "pages_indexed": N}
+    On error: {"success": false, "error": "message"}
+    """
+    form = await request.form()
+    pdf_file = form.get("pdf_file")
+    title = form.get("title", "")
+    description = form.get("description", "")
+    tags = form.get("tags", "")
+    detect_regions = form.get("detect_regions", "")
+    use_vlm = form.get("use_vlm", "")
+
+    # Check if file was provided
+    if pdf_file is None or not hasattr(pdf_file, 'filename') or pdf_file.filename == "":
+        logger.warning("Upload attempted without file")
+        return JSONResponse({"success": False, "error": "Please select a PDF file"}, status_code=400)
+
+    # Read file content
+    try:
+        file_bytes = await pdf_file.read()
+    except Exception as e:
+        logger.error(f"Error reading uploaded file: {e}", exc_info=True)
+        return JSONResponse({"success": False, "error": "Error reading uploaded file"}, status_code=500)
+
+    # Validate file size
+    if len(file_bytes) > MAX_FILE_SIZE:
+        logger.warning(f"File too large: {len(file_bytes)} bytes")
+        return JSONResponse({"success": False, "error": "File exceeds 250MB size limit"}, status_code=400)
+
+    # Validate file is a PDF
+    if not pdf_file.filename.lower().endswith(".pdf"):
+        return JSONResponse({"success": False, "error": "Only PDF files are accepted"}, status_code=400)
+
+    # Validate PDF integrity
+    is_valid, validation_msg = validate_pdf(file_bytes)
+    if not is_valid:
+        logger.warning(f"PDF validation failed: {validation_msg}")
+        return JSONResponse({"success": False, "error": validation_msg}, status_code=400)
+
+    # Parse tags
+    tag_list = []
+    if tags and tags.strip():
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        max_tags = get("app", "validation", "max_tags")
+        if len(tag_list) > max_tags:
+            return JSONResponse({"success": False, "error": f"Maximum {max_tags} tags allowed"}, status_code=400)
+        max_tag_length = get("app", "validation", "max_tag_length")
+        for tag in tag_list:
+            if len(tag) > max_tag_length:
+                return JSONResponse({"success": False, "error": f"Each tag must be {max_tag_length} characters or less"}, status_code=400)
+
+    # Validate title length
+    max_title_length = get("app", "validation", "max_title_length")
+    if title and len(title) > max_title_length:
+        return JSONResponse({"success": False, "error": f"Title must be {max_title_length} characters or less"}, status_code=400)
+
+    # Validate description length
+    max_desc_length = get("app", "validation", "max_description_length")
+    if description and len(description) > max_desc_length:
+        return JSONResponse({"success": False, "error": f"Description must be {max_desc_length} characters or less"}, status_code=400)
+
+    # Get the ColPali model
+    model = sim_map_generator.model
+    processor = sim_map_generator.processor
+    device = sim_map_generator.device
+
+    # Get Vespa app
+    vespa = vespa_app.app
+
+    # Process the PDF
+    enable_regions = detect_regions.lower() in ("on", "true", "1", "yes") if detect_regions else False
+    enable_vlm = use_vlm.lower() in ("on", "true", "1", "yes") if use_vlm else False
+
+    try:
+        success, message, pages_indexed = ingest_pdf(
+            file_bytes=file_bytes,
+            filename=pdf_file.filename,
+            vespa_app=vespa,
+            model=model,
+            processor=processor,
+            device=device,
+            title=title.strip() if title and title.strip() else None,
+            description=description if description else "",
+            tags=tag_list,
+            detect_drawing_regions=enable_regions,
+            use_vlm_detection=enable_vlm,
+        )
+    except Exception as e:
+        logger.error(f"Error processing PDF: {e}", exc_info=True)
+        return JSONResponse({"success": False, "error": "Error processing document. Please try again."}, status_code=500)
+
+    if success:
+        final_title = title.strip() if title and title.strip() else Path(pdf_file.filename).stem
+        logger.info(f"Successfully uploaded: {final_title} ({pages_indexed} pages)")
+        return JSONResponse({
+            "success": True,
+            "title": final_title,
+            "pages_indexed": pages_indexed,
+            "message": message,
+        })
+    else:
+        logger.error(f"Upload failed: {message}")
+        return JSONResponse({"success": False, "error": message}, status_code=400)
+
+
+async def api_download_url(request):
+    """JSON endpoint returning a presigned S3 download URL for the original PDF."""
+    doc_id = request.query_params.get("doc_id", "")
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    try:
+        schema = get("vespa", "schema_name")
+        connection_count = get("vespa", "connection_count")
+        async with vespa_app.app.asyncio(connections=connection_count) as session:
+            response = await session.query(
+                body={
+                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "hits": 1,
+                },
+            )
+            if not response.is_successful():
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            children = response.json.get("root", {}).get("children", [])
+            if not children:
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            s3_key = children[0].get("fields", {}).get("s3_key", "")
+            if not s3_key:
+                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
+
+    try:
+        presigned_url = generate_presigned_url(s3_key)
+    except Exception as e:
+        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+
+    return JSONResponse({"download_url": presigned_url})
+
+
+async def api_download_pdf(request):
+    """Redirect to a presigned S3 URL for the original PDF."""
+    doc_id = request.query_params.get("doc_id", "")
+    if not doc_id:
+        return JSONResponse({"error": "doc_id is required"}, status_code=400)
+
+    try:
+        schema = get("vespa", "schema_name")
+        connection_count = get("vespa", "connection_count")
+        async with vespa_app.app.asyncio(connections=connection_count) as session:
+            response = await session.query(
+                body={
+                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
+                    "ranking": "unranked",
+                    "hits": 1,
+                },
+            )
+            if not response.is_successful():
+                logger.error(f"Vespa query failed for doc_id={doc_id}: {response.json}")
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            children = response.json.get("root", {}).get("children", [])
+            if not children:
+                return JSONResponse({"error": "Document not found"}, status_code=404)
+
+            s3_key = children[0].get("fields", {}).get("s3_key", "")
+            if not s3_key:
+                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+    except Exception as e:
+        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
+
+    try:
+        presigned_url = generate_presigned_url(s3_key)
+    except Exception as e:
+        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
+        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+
+    return RedirectResponse(presigned_url)
+
+
+# =============================================================================
+# SSE Streaming Endpoints
+# =============================================================================
+
 async def message_generator(query_id: str, query: str, doc_ids: list):
-    """Generator function to yield SSE messages for chat response"""
+    """Generator function to yield SSE messages for chat response."""
     images = []
     num_images = get("search", "num_images")
     max_wait = get("image", "max_wait_chat_seconds")
     start_time = time.time()
-    # Check if full images are ready on disk
+
     while (
         len(images) < min(num_images, len(doc_ids))
         and time.time() - start_time < max_wait
     ):
         images = []
-        for idx in range(num_images):
+        for idx in range(min(num_images, len(doc_ids))):
             image_filename = IMG_DIR / f"{doc_ids[idx]}.jpg"
             if not os.path.exists(image_filename):
-                logger.debug(
-                    f"Message generator: Full image not ready for query_id: {query_id}, idx: {idx}"
-                )
+                logger.debug(f"Message generator: Full image not ready for query_id: {query_id}, idx: {idx}")
                 continue
             else:
-                logger.debug(
-                    f"Message generator: image ready for query_id: {query_id}, idx: {idx}"
-                )
+                logger.debug(f"Message generator: image ready for query_id: {query_id}, idx: {idx}")
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
             await asyncio.sleep(get("image", "poll_sleep_seconds"))
 
-    # yield message with number of images ready
     yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
     if not images:
         yield "event: message\ndata: Failed to load images for AI chat!\n\n"
@@ -577,11 +621,10 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
 
     is_remote = is_remote_api(LLM_BASE_URL) or LLM_API_KEY
     if is_remote and not LLM_API_KEY:
-        yield "event: message\ndata: No OPENROUTER_API_KEY configured. AI chat is unavailable.\n\n"
+        yield "event: message\ndata: No API key configured. AI chat is unavailable.\n\n"
         yield "event: close\ndata: \n\n"
         return
 
-    # If newlines are present in the response, the connection will be closed.
     def replace_newline_with_br(text):
         return text.replace("\n", "<br>")
 
@@ -589,14 +632,11 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     doc_metadata = _query_result_metadata.get(query_id, [])
     context_lines = []
     for i, meta in enumerate(doc_metadata[:len(images)]):
-        context_lines.append(
-            f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}"
-        )
+        context_lines.append(f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}")
         if meta.get("text"):
             context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
     doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
 
-    # Build image content blocks for OpenAI-compatible vision API
     content_parts = []
     for i, img in enumerate(images):
         meta_label = ""
@@ -656,205 +696,173 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     yield "event: close\ndata: \n\n"
 
 
-@app.get("/get-message")
-async def get_message(query_id: str, query: str, doc_ids: str):
+async def get_message(request):
+    """SSE endpoint for chat responses."""
+    query_id = request.query_params.get("query_id", "")
+    query = request.query_params.get("query", "")
+    doc_ids = request.query_params.get("doc_ids", "").split(",")
     return StreamingResponse(
-        message_generator(query_id=query_id, query=query, doc_ids=doc_ids.split(",")),
+        message_generator(query_id=query_id, query=query, doc_ids=doc_ids),
         media_type="text/event-stream",
     )
 
 
-@app.post("/api/search")
-async def api_search(request):
-    """JSON search endpoint for the Next.js frontend.
+async def synthesize_generator(query: str, doc_ids: list, query_id: str):
+    """Generator function to yield SSE messages for synthesis response."""
+    images = []
+    num_images = min(len(doc_ids), get("search", "num_images"))
+    max_wait = get("image", "max_wait_chat_seconds")
+    start_time = time.time()
 
-    Accepts JSON body: { query, ranking? }
-    Returns JSON with search results including blur images and doc IDs.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    while (
+        len(images) < num_images
+        and time.time() - start_time < max_wait
+    ):
+        images = []
+        for idx in range(num_images):
+            if idx >= len(doc_ids):
+                break
+            image_filename = IMG_DIR / f"{doc_ids[idx]}.jpg"
+            if not os.path.exists(image_filename):
+                logger.debug(f"Synthesize: Full image not ready for query_id: {query_id}, idx: {idx}")
+                continue
+            else:
+                logger.debug(f"Synthesize: image ready for query_id: {query_id}, idx: {idx}")
+                images.append(Image.open(image_filename))
+        if len(images) < num_images:
+            await asyncio.sleep(get("image", "poll_sleep_seconds"))
 
-    query = body.get("query", "").strip()
-    ranking = body.get("ranking", "hybrid")
+    yield f"event: message\ndata: Generating response based on {len(images)} images...\n\n"
+    if not images:
+        yield "event: message\ndata: Failed to load images for synthesis!\n\n"
+        yield "event: close\ndata: \n\n"
+        return
 
-    if not query:
-        return JSONResponse({"error": "Query is required"}, status_code=400)
+    is_remote = is_remote_api(LLM_BASE_URL) or LLM_API_KEY
+    if is_remote and not LLM_API_KEY:
+        yield "event: message\ndata: No API key configured. AI synthesis is unavailable.\n\n"
+        yield "event: close\ndata: \n\n"
+        return
 
-    query_id = generate_query_id(query, ranking)
+    def replace_newline_with_br(text):
+        return text.replace("\n", "<br>")
 
-    # Run embedding inference
-    q_embs, idx_to_token = app.sim_map_generator.get_query_embeddings_and_token_map(
-        query
-    )
+    doc_metadata = _query_result_metadata.get(str(query_id), [])
+    context_lines = []
+    for i, meta in enumerate(doc_metadata[:len(images)]):
+        context_lines.append(f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}")
+        if meta.get("text"):
+            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
+    doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
 
-    start = time.perf_counter()
-    result = await vespa_app.get_result_from_query(
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        rerank=True,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=get("search", "final_hits"),
-    )
-    duration_ms = round((time.perf_counter() - start) * 1000)
-
-    search_results = vespa_app.results_to_search_results(result, idx_to_token)
-
-    # Trigger background sim map + image download (same as /fetch_results)
-    doc_ids = [r["fields"]["id"] for r in search_results]
-    get_and_store_sim_maps(
-        query_id=query_id,
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        doc_ids=doc_ids,
-    )
-
-    # Download full images to disk in background so /get-message can use them
-    _download_images_bg(doc_ids)
-
-    # Transform Vespa results to JSON-friendly format
-    results_json = []
-    for idx, sr in enumerate(search_results):
-        fields = sr.get("fields", {})
-        relevance = sr.get("relevance", 0)
-        results_json.append({
-            "id": fields.get("id", ""),
-            "title": fields.get("title", ""),
-            "page_number": fields.get("page_number", 0),
-            "snippet": fields.get("snippet", ""),
-            "text": fields.get("text", ""),
-            "blur_image": fields.get("blur_image", ""),
-            "relevance": relevance,
-            "url": fields.get("url", ""),
-            "has_original_pdf": bool(fields.get("s3_key", "")),
+    content_parts = []
+    for i, img in enumerate(images):
+        meta_label = ""
+        if i < len(doc_metadata):
+            m = doc_metadata[i]
+            meta_label = f"[Document {i+1}: \"{m['title']}\", Page {m['page_number']}]"
+        if meta_label:
+            content_parts.append({"type": "text", "text": meta_label})
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         })
 
-    return JSONResponse({
-        "results": results_json,
-        "query": query,
-        "query_id": str(query_id),
-        "doc_ids": doc_ids,
-        "ranking": ranking,
-        "duration_ms": duration_ms,
-        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
-    })
+    content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
 
+    headers = build_auth_headers(LLM_API_KEY)
 
-@app.get("/api/full_image")
-async def api_full_image(doc_id: str):
-    """JSON endpoint returning full-resolution image as base64."""
-    img_path = IMG_DIR / f"{doc_id}.jpg"
-    if not os.path.exists(img_path):
-        image_data = await vespa_app.get_full_image_from_vespa(doc_id)
-        with open(img_path, "wb") as f:
-            f.write(base64.b64decode(image_data))
-    else:
-        with open(img_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
-    return JSONResponse({"image": f"data:image/jpeg;base64,{image_data}"})
-
-
-@rt("/download_pdf")
-async def get(doc_id: str = ""):
-    """Redirect to a presigned S3 URL for the original PDF.
-
-    Looks up the s3_key stored in Vespa for the given doc_id, generates a
-    temporary presigned download URL, and returns a 302 redirect so the
-    browser downloads directly from S3.
-    """
-    if not doc_id:
-        return JSONResponse({"error": "doc_id is required"}, status_code=400)
-
-    # Query Vespa for the document's s3_key
+    response_text = ""
     try:
-        schema = get("vespa", "schema_name")
-        connection_count = get("vespa", "connection_count")
-        async with vespa_app.app.asyncio(connections=connection_count) as session:
-            response = await session.query(
-                body={
-                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
-                    "ranking": "unranked",
-                    "hits": 1,
+        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+            async with client.stream(
+                "POST",
+                f"{LLM_BASE_URL}/chat/completions",
+                headers=headers,
+                json={
+                    "model": CHAT_MODEL,
+                    "stream": True,
+                    "messages": [
+                        {"role": "system", "content": CHAT_SYSTEM_PROMPT},
+                        {"role": "user", "content": content_parts},
+                    ],
                 },
-            )
-            if not response.is_successful():
-                logger.error(f"Vespa query failed for doc_id={doc_id}: {response.json}")
-                return JSONResponse({"error": "Document not found"}, status_code=404)
-
-            children = response.json.get("root", {}).get("children", [])
-            if not children:
-                return JSONResponse({"error": "Document not found"}, status_code=404)
-
-            s3_key = children[0].get("fields", {}).get("s3_key", "")
-            if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk["choices"][0].get("delta", {})
+                        text = delta.get("content", "")
+                        if text:
+                            response_text += text
+                            yield f"event: message\ndata: {replace_newline_with_br(response_text)}\n\n"
+                            await asyncio.sleep(get("llm", "streaming_sleep_seconds"))
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        continue
     except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
-
-    # Generate presigned URL and redirect
-    try:
-        presigned_url = generate_presigned_url(s3_key)
-    except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
-
-    return RedirectResponse(presigned_url)
+        logger.error(f"Synthesis LLM streaming failed: {e}", exc_info=True)
+        yield "event: message\ndata: Error generating AI response.\n\n"
+    yield "event: close\ndata: \n\n"
 
 
-@app.get("/api/download_url")
-async def api_download_url(doc_id: str = ""):
-    """JSON endpoint returning a presigned S3 download URL for the original PDF.
-
-    Used by the Next.js frontend. Returns {"download_url": "..."}.
-    """
-    if not doc_id:
-        return JSONResponse({"error": "doc_id is required"}, status_code=400)
-
-    # Query Vespa for the document's s3_key
-    try:
-        schema = get("vespa", "schema_name")
-        connection_count = get("vespa", "connection_count")
-        async with vespa_app.app.asyncio(connections=connection_count) as session:
-            response = await session.query(
-                body={
-                    "yql": f'select s3_key from {schema} where id contains "{doc_id}"',
-                    "ranking": "unranked",
-                    "hits": 1,
-                },
-            )
-            if not response.is_successful():
-                return JSONResponse({"error": "Document not found"}, status_code=404)
-
-            children = response.json.get("root", {}).get("children", [])
-            if not children:
-                return JSONResponse({"error": "Document not found"}, status_code=404)
-
-            s3_key = children[0].get("fields", {}).get("s3_key", "")
-            if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
-    except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to look up document"}, status_code=500)
-
-    try:
-        presigned_url = generate_presigned_url(s3_key)
-    except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
-
-    return JSONResponse({"download_url": presigned_url})
+async def api_synthesize(request):
+    """SSE endpoint for synthesizing an AI answer from selected documents."""
+    query_id = request.query_params.get("query_id", "")
+    query = request.query_params.get("query", "")
+    doc_ids = request.query_params.get("doc_ids", "")
+    doc_id_list = [d.strip() for d in doc_ids.split(",") if d.strip()]
+    return StreamingResponse(
+        synthesize_generator(query=query, doc_ids=doc_id_list, query_id=query_id),
+        media_type="text/event-stream",
+    )
 
 
-@rt("/app")
-def get():
-    return Layout(Main(Div(P(f"Connected to Vespa at {vespa_app.url}"), cls="p-4")))
+# =============================================================================
+# Application Setup
+# =============================================================================
 
+routes = [
+    # Static files
+    Route("/static/{filepath:path}", serve_static),
+
+    # JSON API endpoints
+    Route("/suggestions", api_suggestions),
+    Route("/api/search", api_search, methods=["POST"]),
+    Route("/api/visual-search", api_visual_search, methods=["POST"]),
+    Route("/api/full_image", api_full_image),
+    Route("/api/sim-map", api_sim_map),
+    Route("/api/upload", api_upload, methods=["POST"]),
+    Route("/api/download_url", api_download_url),
+    Route("/download_pdf", api_download_pdf),
+
+    # SSE streaming endpoints
+    Route("/get-message", get_message),
+    Route("/api/synthesize", api_synthesize),
+]
+
+middleware = [
+    Middleware(CorrelationIdMiddleware),
+    Middleware(ErrorBoundaryMiddleware),
+]
+
+app = Starlette(
+    debug=False,
+    routes=routes,
+    middleware=middleware,
+    on_startup=[startup],
+)
+
+# Alias for compatibility with existing uvicorn command
+asgi_app = app
 
 if __name__ == "__main__":
     HOT_RELOAD = get("app", "hot_reload")

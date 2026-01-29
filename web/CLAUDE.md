@@ -1,6 +1,6 @@
 # CLAUDE.md — Web Frontend
 
-Next.js 16 / React 19 / TypeScript frontend for the ColPali-Vespa visual document retrieval system. Alternative UI to the FastHTML app, sharing the same Python backend.
+Next.js 16 / React 19 / TypeScript frontend for the ColPali-Vespa visual document retrieval system. Primary UI for the application, consuming JSON APIs from the Starlette backend (`main.py`).
 
 ## Commands
 
@@ -38,21 +38,27 @@ src/
 │   ├── api/              # Next.js API route handlers (proxy to backend)
 │   │   ├── search/       # POST → backend search
 │   │   ├── upload/       # POST → backend ingest
+│   │   ├── visual-search/ # POST → visual search with results
+│   │   ├── sim-map/      # GET → similarity map images
 │   │   └── suggestions/  # GET → query autocomplete
 │   ├── upload/           # Upload page
+│   ├── visual-search/    # Visual search page (multi-select synthesis)
 │   ├── layout.tsx        # Root layout (metadata, dark mode class)
 │   ├── page.tsx          # Home → Workspace
 │   └── globals.css       # Design system (CSS variables, animations)
 ├── components/
-│   ├── document/         # DocumentViewer modal
+│   ├── document/         # DocumentViewer modal, SimilarityMapViewer
 │   ├── layout/           # Sidebar, TopBar
 │   ├── results/          # SplitView, SourcePanel, ResultCard, AnswerPanel
 │   ├── scope/            # ScopeBar (category/document filters)
 │   ├── search/           # QueryInput (with autocomplete)
+│   ├── visual-search/    # ResultCard, ResultGrid, SelectionFooter, AnswerPanel
 │   ├── ui/               # Primitives: Button, Badge, Input, Card, Tooltip, Skeleton
 │   └── workspace.tsx     # Root component
 ├── hooks/
 │   ├── use-search.ts     # Search state, results, SSE streaming
+│   ├── use-visual-search.ts # Visual search state, selection, synthesis SSE
+│   ├── use-similarity-maps.ts # Similarity map polling and caching
 │   └── use-project.ts    # Projects, scope management
 ├── lib/
 │   ├── api-client.ts     # Backend API helpers + response transforms
@@ -78,9 +84,12 @@ All requests proxy through Next.js API routes to `BACKEND_URL` (default `http://
 | Frontend Route | Backend Endpoint | Method | Notes |
 |---|---|---|---|
 | `/api/search` | `/api/search` | POST | Query + ranking |
-| `/api/upload` | `/upload` | POST | FormData multipart |
+| `/api/upload` | `/api/upload` | POST | FormData multipart, JSON response |
+| `/api/visual-search` | `/api/visual-search` | POST | Visual search with result images |
+| `/api/sim-map` | `/api/sim-map` | GET | Similarity map base64 images |
 | `/api/suggestions` | `/suggestions` | GET | Debounced 250ms |
-| `/api/chat` (rewrite) | `/get-message` | GET | SSE stream |
+| `/api/chat` (rewrite) | `/get-message` | GET | SSE stream for chat |
+| `/api/synthesize` (rewrite) | `/api/synthesize` | GET | SSE stream for synthesis |
 | `/api/image` (rewrite) | `/api/full_image` | GET | Full-res page image |
 
 Rewrites configured in `next.config.ts`. The `BACKEND_URL` env var controls the target.
@@ -94,6 +103,27 @@ QueryInput → useSearch.search()
   → setResults() → SourcePanel renders ResultCard[]
   → EventSource(/api/chat) → SSE messages accumulate answer text
   → AnswerPanel renders streaming response with citations
+```
+
+### Data Flow — Visual Search
+
+```
+VisualSearchPage → useVisualSearch.search()
+  → POST /api/visual-search → backend (returns results + query_id)
+  → ResultGrid renders ResultCard[] with selection checkboxes
+  → User selects results → selection state in hook
+  → "Get Answer" → EventSource(/api/synthesize) with selected doc IDs
+  → AnswerPanel renders streaming synthesis with source thumbnails
+```
+
+### Data Flow — Similarity Maps
+
+```
+DocumentViewer (Similarity tab) → SimilarityMapViewer
+  → useSimilarityMaps hook polls /api/sim-map for each token
+  → Token buttons show loading/ready state
+  → Click token → overlay heatmap on document image
+  → Toggle between original and similarity visualization
 ```
 
 ## Code Conventions
@@ -129,9 +159,8 @@ BACKEND_URL=http://localhost:7860    # Python backend URL (required)
 
 ## Known Gaps
 
-These files exist but are stubs or not fully wired:
-- `components/search/file-search.tsx` — not implemented
-- `components/upload/upload-form.tsx` — not implemented
+These features are planned but not yet implemented:
+- `components/search/file-search.tsx` — file-based search not implemented
 - `app/api/documents/route.ts` — empty placeholder
 - `app/api/projects/route.ts` — empty placeholder
 - Copy/thumbs up/down buttons in AnswerPanel are non-functional

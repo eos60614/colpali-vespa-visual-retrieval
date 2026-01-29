@@ -22,7 +22,8 @@ export function useSearch() {
     if (typeof window === "undefined") return [];
     try {
       return JSON.parse(localStorage.getItem("ki55_recent_queries") || "[]");
-    } catch {
+    } catch (e) {
+      console.error("[useSearch] Failed to parse recent queries from localStorage:", e);
       return [];
     }
   });
@@ -45,8 +46,8 @@ export function useSearch() {
         const updated = [newEntry, ...filtered].slice(0, 20);
         try {
           localStorage.setItem("ki55_recent_queries", JSON.stringify(updated));
-        } catch {
-          // localStorage full or unavailable
+        } catch (e) {
+          console.error("[useSearch] Failed to save recent queries to localStorage:", e);
         }
         return updated;
       });
@@ -58,8 +59,10 @@ export function useSearch() {
     async (
       searchQuery: string,
       projectId: string,
-      _categories: DocumentCategory[],
-      _documentIds: string[]
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      categories: DocumentCategory[],
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      documentIds: string[]
     ) => {
       if (!searchQuery.trim()) return;
 
@@ -142,7 +145,8 @@ export function useSearch() {
             eventSourceRef.current = null;
           });
 
-          es.addEventListener("error", () => {
+          es.addEventListener("error", (event) => {
+            console.error("[useSearch] SSE stream error:", event);
             setAnswer((prev) =>
               prev ? { ...prev, isStreaming: false } : null
             );
@@ -153,8 +157,11 @@ export function useSearch() {
         }
       } catch (e) {
         if ((e as Error).name === "AbortError") return;
+        console.error("[useSearch] Search failed:", e);
         logger.error("Search failed", { error: e });
         setIsSearching(false);
+        // Re-throw so error boundaries can catch it
+        throw e;
       }
     },
     [addRecentQuery]

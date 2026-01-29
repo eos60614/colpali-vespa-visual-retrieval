@@ -1,5 +1,7 @@
 # Research: File Upload and Ingestion with Metadata
 
+> **Note**: This research was conducted for an earlier architecture. The application now uses Starlette (JSON API) + Next.js (frontend). File upload now uses Starlette's UploadFile directly with Next.js form handling.
+
 **Feature**: 002-file-upload-ingest
 **Date**: 2026-01-14
 
@@ -9,23 +11,23 @@ This document captures research findings for implementing file upload functional
 
 ---
 
-## 1. File Upload in FastHTML
+## 1. File Upload Implementation
 
-**Decision**: Use FastHTML's built-in file upload handling with `Form` and `Input(type="file")`
+**Decision**: Use Starlette's built-in file upload handling with `UploadFile`
 
 **Rationale**:
-- FastHTML (built on Starlette) natively supports multipart form uploads
+- Starlette natively supports multipart form uploads
 - The `UploadFile` class from Starlette provides async file handling
 - Consistent with existing codebase patterns
 - No additional dependencies required
 
 **Alternatives Considered**:
 - Dropzone.js: Adds unnecessary JavaScript complexity
-- Custom AJAX upload: FastHTML + HTMX handles this natively
+- Custom AJAX upload: Next.js handles this natively with fetch API
 
 **Implementation Pattern**:
 ```python
-from fasthtml.common import Form, Input, Button
+from starlette.requests import Request
 
 # Frontend component
 def UploadForm():
@@ -173,9 +175,9 @@ def generate_doc_id(pdf_bytes: bytes, title: str) -> str:
 **Rationale**:
 - Consistent with existing navigation pattern (Home, About)
 - Keeps upload UI separate from search interface
-- HTMX allows showing progress/results without page reload
+- Next.js fetch API allows showing progress/results without page reload
 
-**Location**: Add route `/upload` and navigation link in `frontend/layout.py`
+**Location**: Add route `/upload` page in Next.js (`web/src/app/upload/page.tsx`)
 
 ---
 

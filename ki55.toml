@@ -14,14 +14,6 @@ keepalive_interval_seconds = 5
 healthcheck_timeout = 30
 hot_reload = false
 
-[app.cdn]
-overlayscrollbars_css = "https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/styles/overlayscrollbars.min.css"
-overlayscrollbars_js = "https://cdnjs.cloudflare.com/ajax/libs/overlayscrollbars/2.10.0/browser/overlayscrollbars.browser.es5.min.js"
-awesomplete_css = "https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.css"
-awesomplete_js = "https://cdnjs.cloudflare.com/ajax/libs/awesomplete/1.1.7/awesomplete.min.js"
-htmx_sse_js = "https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"
-htmx_sse_integrity = "sha384-A986SAtodyH8eg8x8irJnYUk7i9inVQqYigD6qZ9evobksGNIXfeFvDwLSHcp31N"
-
 [app.validation]
 max_tags = 20
 max_tag_length = 50
