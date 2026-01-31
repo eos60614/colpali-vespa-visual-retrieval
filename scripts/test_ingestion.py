@@ -15,7 +15,7 @@ import pytest
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.ingestion.schema_discovery import (
+from backend.ingestion.database.schema_discovery import (
     SchemaMap,
     Table,
     Column,
@@ -23,7 +23,7 @@ from backend.ingestion.schema_discovery import (
     FileReferenceType,
     ImplicitRelationship,
 )
-from backend.ingestion.record_ingester import (
+from backend.ingestion.database.record_ingester import (
     RecordIngester,
 )
 

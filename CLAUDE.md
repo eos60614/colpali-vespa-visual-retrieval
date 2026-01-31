@@ -60,42 +60,75 @@ SpecKit workflow commands (`/speckit.*`) are also available for feature specific
 
 ## Architecture
 
+### Backend Directory Structure
+
+```
+backend/
+├── core/                      # Shared infrastructure
+│   ├── config.py              # Configuration loader (ki55.toml)
+│   ├── logging_config.py      # Centralized logging with correlation IDs
+│   ├── middleware.py          # ASGI middleware (correlation ID, error boundary)
+│   ├── cache.py               # LRU cache utilities
+│   └── models/                # Model registry from ki55.toml
+│
+├── connectors/                # External service clients
+│   ├── vespa/client.py        # VespaQueryClient (search, ranking)
+│   ├── llm/config.py          # LLM provider configuration
+│   └── storage/s3.py          # S3 presigned URL generation
+│
+├── ingestion/                 # Document processing
+│   ├── pdf/processor.py       # PDF validation, rendering, embedding, Vespa feeding
+│   ├── regions/detector.py    # Large drawing region detection
+│   └── database/              # Procore PostgreSQL sync
+│       ├── sync_manager.py    # Full/incremental sync orchestration
+│       ├── schema_discovery.py # Auto-discover DB schema
+│       └── ...
+│
+├── query/                     # Search & retrieval
+│   ├── ranking/maxsim.py      # MaxSim reranking (NumPy)
+│   ├── ranking/llm.py         # Optional LLM-based reranking
+│   ├── agent/session.py       # Multi-step reasoning agent
+│   └── text/stopwords.py      # Stopword filtering
+│
+└── colpali.py                 # SimMapGenerator (shared: embeddings + similarity maps)
+```
+
 ### Request Flow
 
 ```
 Browser → Next.js (web/) → JSON API routes → Starlette (main.py)
   ├── SimMapGenerator (colpali.py) → ColQwen2.5 model → query embeddings
-  ├── VespaQueryClient (vespa_app.py) → Vespa (HNSW + BM25)
-  ├── rerank.py → application-level MaxSim reranking (NumPy)
+  ├── VespaQueryClient (connectors/vespa/client.py) → Vespa (HNSW + BM25)
+  ├── maxsim.py → application-level MaxSim reranking (NumPy)
   ├── LLM chat → streaming SSE via OpenAI-compatible API
-  └── AgentSession (agent.py) → multi-step function-calling reasoning loop
+  └── AgentSession (query/agent/session.py) → multi-step function-calling reasoning loop
 ```
 
 ### Key Modules
 
 **`main.py`** — Starlette ASGI app entry point. Pure JSON API backend — all routes return `JSONResponse` or `StreamingResponse` (SSE). Initializes singletons on startup: `VespaQueryClient`, `SimMapGenerator` (loaded in background thread), `ThreadPoolExecutor`. Contains `message_generator()` for SSE chat streaming via httpx. Key API routes: `/api/search`, `/api/visual-search`, `/api/upload`, `/api/sim-map`, `/api/synthesize`, `/get-message`.
 
-**`backend/config.py`** — Centralized configuration loader. Reads non-sensitive config from `ki55.toml` at import time. Provides `get(*keys)` for nested TOML traversal (e.g., `get("llm", "chat_model")`), `require_env()` for mandatory env vars, and `get_env()` for optional ones. All config access across the codebase goes through this module.
+**`backend/core/config.py`** — Centralized configuration loader. Reads non-sensitive config from `ki55.toml` at import time. Provides `get(*keys)` for nested TOML traversal (e.g., `get("llm", "chat_model")`), `require_env()` for mandatory env vars, and `get_env()` for optional ones. All config access across the codebase goes through this module.
 
-**`backend/llm_config.py`** — LLM provider configuration. `resolve_llm_config()` returns `(base_url, api_key)` — `LLM_BASE_URL` is required (no fallback). Also provides `get_chat_model()`, `is_remote_api()`, and `build_auth_headers()`. Used by `main.py`, `backend/agent.py`, and `backend/drawing_regions.py`.
+**`backend/connectors/llm/config.py`** — LLM provider configuration. `resolve_llm_config()` returns `(base_url, api_key)` — `LLM_BASE_URL` is required (no fallback). Also provides `get_chat_model()`, `is_remote_api()`, and `build_auth_headers()`.
 
-**`backend/vespa_app.py`** — `VespaQueryClient` class. Three connection modes (local, mTLS, token). Query dispatching for bm25, colpali, and hybrid ranking. Handles tensor format conversions between Python/NumPy and Vespa's block format. Key methods: `get_result_from_query()`, `query_vespa_colpali()`, `query_vespa_bm25()`, `get_sim_maps_from_query()`.
+**`backend/connectors/vespa/client.py`** — `VespaQueryClient` class. Three connection modes (local, mTLS, token). Query dispatching for bm25, colpali, and hybrid ranking. Handles tensor format conversions between Python/NumPy and Vespa's block format. Key methods: `get_result_from_query()`, `query_vespa_colpali()`, `query_vespa_bm25()`, `get_sim_maps_from_query()`.
 
 **`backend/colpali.py`** — `SimMapGenerator` class. Loads the ColQwen2.5 model (`tsystems/colqwen2.5-3b-multilingual-v1.0`) with bfloat16. Query embeddings cached via `@lru_cache(maxsize=128)`. Generates similarity map heatmaps by blending viridis colormaps onto page images. CPU-bound inference runs in ThreadPoolExecutor.
 
-**`backend/ingest.py`** — PDF ingestion pipeline. Validates → renders pages at 150 DPI (PyMuPDF) → extracts text → generates embeddings (binary int8 + float f32) → creates blur previews → feeds to Vespa. Supports region detection for large-format drawings (>2.8M pixels).
+**`backend/ingestion/pdf/processor.py`** — PDF ingestion pipeline. Validates → renders pages at 150 DPI (PyMuPDF) → extracts text → generates embeddings (binary int8 + float f32) → creates blur previews → feeds to Vespa. Supports region detection for large-format drawings (>2.8M pixels).
 
-**`backend/drawing_regions.py`** — Region detection for large architectural/construction drawings. Two strategies: heuristic (whitespace-based grid segmentation) and VLM-assisted (sends image to LLM for semantic bounding boxes). Falls back to tiling if heuristic finds <2 regions. Each region becomes a separate Vespa document linked to its parent page.
+**`backend/ingestion/regions/detector.py`** — Region detection for large architectural/construction drawings. Two strategies: heuristic (whitespace-based grid segmentation) and VLM-assisted (sends image to LLM for semantic bounding boxes). Falls back to tiling if heuristic finds <2 regions. Each region becomes a separate Vespa document linked to its parent page.
 
-**`backend/rerank.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
+**`backend/query/ranking/maxsim.py`** — Application-level MaxSim reranking using float embeddings fetched from Vespa. Prefers float precision, falls back to unpacking binary embeddings.
 
-**`backend/llm_rerank.py`** — Optional LLM-based semantic reranking. Uses the configured LLM as a cross-encoder to jointly read query and document content and score relevance. Runs after MaxSim reranking when enabled via `llm.llm_rerank_enabled` in `ki55.toml` (default: disabled).
+**`backend/query/ranking/llm.py`** — Optional LLM-based semantic reranking. Uses the configured LLM as a cross-encoder to jointly read query and document content and score relevance. Runs after MaxSim reranking when enabled via `llm.llm_rerank_enabled` in `ki55.toml` (default: disabled).
 
-**`backend/agent.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events.
+**`backend/query/agent/session.py`** — `AgentSession` for multi-step document reasoning via OpenAI-compatible function calling. Three tools: `search_documents`, `get_page_text`, `provide_answer`. Loops up to 5 steps. Streams reasoning steps as SSE events.
 
-**`backend/models/config.py`** — Model registry. Loads model definitions from `ki55.toml` `[colpali.models.*]` sections. Two models: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
+**`backend/core/models/config.py`** — Model registry. Loads model definitions from `ki55.toml` `[colpali.models.*]` sections. Two models: `colpali` (vidore/colpali-v1.2) and `colqwen3` (tsystems/colqwen2.5-3b-multilingual-v1.0, active default). Both use 128-dim embeddings.
 
-**`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
+**`backend/ingestion/database/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
 **`web/`** — Next.js 16/React 19 frontend (TypeScript). Primary UI for the application. Runs on port 3000 (`npm run dev`). Consumes JSON APIs from `main.py`. Key features: visual search with multi-select synthesis, similarity map viewer, document upload, streaming AI chat. See `web/CLAUDE.md` for detailed frontend documentation.
 
@@ -109,18 +142,18 @@ Ranking phases:
 1. **Retrieval:** HNSW nearest neighbor on binary embeddings
 2. **First-phase:** MaxSim with binary embeddings (all candidates)
 3. **Second-phase:** MaxSim with float embeddings (top 10)
-4. **Optional app-level rerank:** Full MaxSim in Python/NumPy (`backend/rerank.py`)
-5. **Optional LLM rerank:** Semantic cross-encoder scoring via LLM (`backend/llm_rerank.py`, disabled by default)
+4. **Optional app-level rerank:** Full MaxSim in Python/NumPy (`backend/query/ranking/maxsim.py`)
+5. **Optional LLM rerank:** Semantic cross-encoder scoring via LLM (`backend/query/ranking/llm.py`, disabled by default)
 
 Ranking profiles in `vespa-app/schemas/pdf_page.sd`: `unranked`, `bm25`, `colpali`, `hybrid`, and `*_sim` variants (same logic + similarity map tensors).
 
 ### Configuration Architecture
 
-Non-sensitive config lives in **`ki55.toml`** (required at startup). All sections: `[app]`, `[llm]`, `[vespa]`, `[colpali]`, `[search]`, `[image]`, `[agent]`, `[drawing_regions]`, `[ingestion]`, `[autocomplete]`. Sensitive values (API keys, database URLs) stay in `.env`. Access both via `backend/config.py`.
+Non-sensitive config lives in **`ki55.toml`** (required at startup). All sections: `[app]`, `[llm]`, `[vespa]`, `[colpali]`, `[search]`, `[image]`, `[agent]`, `[drawing_regions]`, `[ingestion]`, `[autocomplete]`. Sensitive values (API keys, database URLs) stay in `.env`. Access both via `backend/core/config.py`.
 
 ### LLM Provider Configuration
 
-All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve_llm_config()` in `backend/llm_config.py`):
+All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve_llm_config()` in `backend/connectors/llm/config.py`):
 
 - **`LLM_BASE_URL`** — Required in `.env`. No fallback URLs. Set to `https://openrouter.ai/api/v1`, `https://api.openai.com/v1`, `http://localhost:11434/v1` (Ollama), etc.
 - **API key** — `OPENROUTER_API_KEY` or `OPENAI_API_KEY` from `.env` (optional for local providers).

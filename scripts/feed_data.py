@@ -30,7 +30,7 @@ from vespa.application import Vespa
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.config import get, get_env
+from backend.core.config import get, get_env
 
 
 def get_colpali_model():
@@ -311,7 +311,7 @@ def main():
     # Phase 2: Generate embeddings (GPU-bound, sequential per PDF but batched)
     print("\n[Phase 2] Generating ColPali embeddings...")
     if args.detect_regions:
-        from backend.drawing_regions import detect_and_extract_regions, should_detect_regions
+        from backend.ingestion.regions.detector import detect_and_extract_regions, should_detect_regions
         import fitz as fitz_module
         import json
         print(f"  Region detection ENABLED (method={args.detection_method})")

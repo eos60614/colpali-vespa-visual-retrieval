@@ -22,15 +22,15 @@ from starlette.responses import FileResponse, JSONResponse, RedirectResponse, St
 from starlette.routing import Route
 from vespa.application import Vespa
 
-from backend.config import get
-from backend.logging_config import configure_logging, get_logger
-from backend.middleware import CorrelationIdMiddleware, ErrorBoundaryMiddleware
-from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
+from backend.core.config import get
+from backend.core.logging_config import configure_logging, get_logger
+from backend.core.middleware import CorrelationIdMiddleware, ErrorBoundaryMiddleware
+from backend.connectors.llm.config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
 from backend.colpali import SimMapGenerator
-from backend.vespa_app import VespaQueryClient
-from backend.ingest import ingest_pdf, validate_pdf
-from backend.s3 import generate_presigned_url
-from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
+from backend.connectors.vespa.client import VespaQueryClient
+from backend.ingestion.pdf.processor import ingest_pdf, validate_pdf
+from backend.connectors.storage.s3 import generate_presigned_url
+from backend.query.ranking.llm import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
 
 # Initialize centralized logging
 LOG_LEVEL = get("app", "log_level").upper()

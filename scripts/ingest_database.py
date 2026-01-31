@@ -17,11 +17,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
-from backend.config import get, get_env
-from backend.ingestion.checkpoint import CheckpointStore
-from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
-from backend.ingestion.schema_discovery import SchemaDiscovery
-from backend.ingestion.sync_manager import SyncConfig, SyncManager
+from backend.core.config import get, get_env
+from backend.ingestion.database.checkpoint import CheckpointStore
+from backend.ingestion.database.db_connection import ConnectionConfig, DatabaseConnection
+from backend.ingestion.database.schema_discovery import SchemaDiscovery
+from backend.ingestion.database.sync_manager import SyncConfig, SyncManager
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:
@@ -254,7 +254,7 @@ async def main() -> int:
             # Initialize document processor if enabled
             pdf_processor = None
             if args.process_pdfs and not args.dry_run:
-                from backend.ingestion.pdf_processor import DocumentProcessor
+                from backend.ingestion.database.pdf_processor import DocumentProcessor
                 logger.info("Initializing document processor (model loads on first file)...")
                 pdf_processor = DocumentProcessor(
                     vespa_app=vespa_app,

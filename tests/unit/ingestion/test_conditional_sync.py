@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.ingestion.change_detector import Change, ChangeSet
-from backend.ingestion.sync_manager import SyncConfig, SyncManager
+from backend.ingestion.database.change_detector import Change, ChangeSet
+from backend.ingestion.database.sync_manager import SyncConfig, SyncManager
 
 
 # ---------------------------------------------------------------------------

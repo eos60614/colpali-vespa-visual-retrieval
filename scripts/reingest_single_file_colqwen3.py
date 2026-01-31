@@ -24,7 +24,7 @@ from transformers import AutoModel, AutoProcessor
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.config import get
+from backend.core.config import get
 
 load_dotenv()
 

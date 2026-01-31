@@ -14,10 +14,10 @@ from dotenv import load_dotenv
 sys.path.insert(0, str(Path(__file__).parent.parent))
 load_dotenv()
 
-from backend.config import get, get_env  # noqa: E402
-from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection  # noqa: E402
-from backend.ingestion.schema_discovery import SchemaDiscovery  # noqa: E402
-from backend.ingestion.record_ingester import RecordIngester  # noqa: E402
+from backend.core.config import get, get_env  # noqa: E402
+from backend.ingestion.database.db_connection import ConnectionConfig, DatabaseConnection  # noqa: E402
+from backend.ingestion.database.schema_discovery import SchemaDiscovery  # noqa: E402
+from backend.ingestion.database.record_ingester import RecordIngester  # noqa: E402
 
 
 class SimpleVespaClient:

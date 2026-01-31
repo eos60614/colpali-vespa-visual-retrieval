@@ -62,9 +62,9 @@ async def test_e2e_file_ingestion(db_url, vespa_url, s3_config):
     import asyncpg
     import logging
     from vespa.application import Vespa
-    from backend.ingestion.file_detector import DetectedFile
-    from backend.ingestion.file_downloader import FileDownloader, DownloadStrategy
-    from backend.ingestion.pdf_processor import DocumentProcessor
+    from backend.ingestion.database.file_detector import DetectedFile
+    from backend.ingestion.database.file_downloader import FileDownloader, DownloadStrategy
+    from backend.ingestion.database.pdf_processor import DocumentProcessor
 
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)

@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from backend.drawing_regions import (
+from backend.ingestion.regions.detector import (
     DetectedRegion,
     _cluster_elements_spatially,
     _find_density_minima_splits,
@@ -337,7 +337,7 @@ class TestClassifyRegionsVlm:
     def test_labels_updated_on_success(self):
         """VLM classifier updates region labels from response."""
         import httpx as httpx_module
-        from backend.drawing_regions import classify_regions_vlm
+        from backend.ingestion.regions.detector import classify_regions_vlm
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
@@ -359,7 +359,7 @@ class TestClassifyRegionsVlm:
         assert result[1].label == "notes"
 
     def test_no_regions_returns_empty(self):
-        from backend.drawing_regions import classify_regions_vlm
+        from backend.ingestion.regions.detector import classify_regions_vlm
         img = _make_large_image()
         result = classify_regions_vlm(img, [])
         assert result == []

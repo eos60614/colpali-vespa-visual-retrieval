@@ -15,8 +15,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from backend.ingestion.db_connection import ConnectionConfig, DatabaseConnection
-from backend.ingestion.schema_discovery import SchemaDiscovery
+from backend.ingestion.database.db_connection import ConnectionConfig, DatabaseConnection
+from backend.ingestion.database.schema_discovery import SchemaDiscovery
 
 
 def setup_logging(verbose: bool = False) -> logging.Logger:

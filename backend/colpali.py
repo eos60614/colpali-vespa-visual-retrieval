@@ -17,8 +17,8 @@ from vidore_benchmark.interpretability.torch_utils import (
 from functools import lru_cache
 import logging
 
-from backend.config import get
-from backend.logging_config import get_logger
+from backend.core.config import get
+from backend.core.logging_config import get_logger
 
 _CACHE_MAXSIZE = get("colpali", "lru_cache_maxsize")
 

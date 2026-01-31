@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.s3 import generate_presigned_url
+from backend.connectors.storage.s3 import generate_presigned_url
 import backend.s3 as s3_mod
 
 

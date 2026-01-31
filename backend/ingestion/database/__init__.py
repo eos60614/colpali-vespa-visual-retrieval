@@ -1,39 +1,9 @@
 """
-Ingestion Module
+Database ingestion module for Procore PostgreSQL.
 
-Provides document ingestion capabilities:
-- PDF processing and embedding generation (pdf/)
-- Region detection for large drawings (regions/)
-- Database ingestion from PostgreSQL (database/)
+Provides automatic data ingestion from Procore PostgreSQL database into Vespa.
 """
 
-# PDF Ingestion
-from backend.ingestion.pdf import (
-    validate_pdf,
-    validate_image,
-    ingest_pdf,
-    ingest_image,
-    pdf_to_images,
-    render_page,
-    generate_embeddings,
-    feed_document,
-    generate_doc_id,
-    create_blur_image,
-    image_to_base64,
-    float_to_binary_embedding,
-    sanitize_text,
-    PROCESSABLE_EXTENSIONS,
-    PROCESSABLE_IMAGE_EXTENSIONS,
-)
-
-# Region Detection
-from backend.ingestion.regions import (
-    DetectedRegion,
-    should_detect_regions,
-    detect_and_extract_regions,
-)
-
-# Database Ingestion (Procore)
 from backend.ingestion.database.exceptions import (
     IngestionError,
     ConnectionError,
@@ -86,26 +56,6 @@ from backend.ingestion.database.pdf_processor import (
 )
 
 __all__ = [
-    # PDF Ingestion
-    "validate_pdf",
-    "validate_image",
-    "ingest_pdf",
-    "ingest_image",
-    "pdf_to_images",
-    "render_page",
-    "generate_embeddings",
-    "feed_document",
-    "generate_doc_id",
-    "create_blur_image",
-    "image_to_base64",
-    "float_to_binary_embedding",
-    "sanitize_text",
-    "PROCESSABLE_EXTENSIONS",
-    "PROCESSABLE_IMAGE_EXTENSIONS",
-    # Region Detection
-    "DetectedRegion",
-    "should_detect_regions",
-    "detect_and_extract_regions",
     # Exceptions
     "IngestionError",
     "ConnectionError",
