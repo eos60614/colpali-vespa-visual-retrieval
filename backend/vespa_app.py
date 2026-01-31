@@ -1,6 +1,6 @@
 import os
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 import asyncio
 import logging
 import numpy as np
@@ -13,6 +13,23 @@ import backend.stopwords
 
 from backend.config import get
 from backend.logging_config import get_logger
+
+
+# Filterable fields that can be used in search queries
+FILTERABLE_FIELDS = {
+    "source_system",    # procore, sharepoint, etc.
+    "project_id",       # Project identifier
+    "project_name",     # Project name (text search)
+    "category",         # drawing, photo, submittal, etc.
+    "document_type",    # More specific type
+    "discipline",       # architectural, structural, etc.
+    "status",           # draft, approved, etc.
+    "company",          # Vendor/company name
+    "company_id",       # Vendor/company ID
+    "file_type",        # pdf, jpg, etc.
+    "author",           # Document author
+    "is_current_revision",  # Boolean: current revision only
+}
 
 
 class VespaQueryClient:
@@ -100,6 +117,75 @@ class VespaQueryClient:
         else:
             return self.SELECT_FIELDS
 
+    def build_filter_clause(self, filters: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Build a YQL filter clause from filter parameters.
+
+        Supported filters:
+            - source_system: str - Filter by source system (procore, sharepoint, etc.)
+            - project_id: str - Filter by project ID
+            - project_name: str - Text search on project name
+            - category: str or list - Filter by document category
+            - document_type: str or list - Filter by document type
+            - discipline: str or list - Filter by discipline
+            - status: str or list - Filter by status
+            - company: str - Filter by company/vendor name
+            - company_id: str - Filter by company/vendor ID
+            - file_type: str or list - Filter by file extension
+            - author: str - Filter by author
+            - is_current_revision: bool - Filter to current revisions only
+            - source_modified_after: int - Filter by source modification time (epoch ms)
+
+        Args:
+            filters: Dictionary of filter field -> value
+
+        Returns:
+            YQL filter string (empty string if no valid filters)
+        """
+        if not filters:
+            return ""
+
+        conditions = []
+
+        for field, value in filters.items():
+            if value is None:
+                continue
+
+            # Validate field is filterable
+            if field not in FILTERABLE_FIELDS and field != "source_modified_after":
+                self.logger.warning(f"Ignoring unknown filter field: {field}")
+                continue
+
+            # Handle list values (OR condition)
+            if isinstance(value, list):
+                if not value:
+                    continue
+                # Create OR condition for list values
+                or_conditions = [f'{field} contains "{v}"' for v in value]
+                conditions.append(f"({' OR '.join(or_conditions)})")
+
+            # Handle boolean
+            elif isinstance(value, bool):
+                conditions.append(f"{field} = {'true' if value else 'false'}")
+
+            # Handle timestamp range
+            elif field == "source_modified_after":
+                conditions.append(f"source_modified_at >= {int(value)}")
+
+            # Handle string values
+            elif isinstance(value, str):
+                # Use 'contains' for text matching
+                conditions.append(f'{field} contains "{value}"')
+
+            # Handle numeric
+            elif isinstance(value, (int, float)):
+                conditions.append(f"{field} = {value}")
+
+        if not conditions:
+            return ""
+
+        return " AND ".join(conditions)
+
     def format_query_results(
         self, query: str, response: VespaQueryResponse, hits: int = 5
     ) -> dict:
@@ -128,6 +214,7 @@ class VespaQueryClient:
         hits: int = None,
         timeout: str = None,
         sim_map: bool = False,
+        filters: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> dict:
         """
@@ -139,6 +226,7 @@ class VespaQueryClient:
             q_emb (torch.Tensor): Query embeddings.
             hits (int, optional): Number of hits to retrieve. Defaults to 3.
             timeout (str, optional): Query timeout. Defaults to "10s".
+            filters (dict, optional): Metadata filters (see build_filter_clause).
 
         Returns:
             dict: The formatted query results.
@@ -146,6 +234,13 @@ class VespaQueryClient:
         hits = hits or get("vespa", "default_hits")
         timeout = timeout or get("vespa", "query_timeout")
         connection_count = get("vespa", "connection_count")
+
+        # Build filter clause
+        filter_clause = self.build_filter_clause(filters)
+        where_clause = "userQuery()"
+        if filter_clause:
+            where_clause = f"({where_clause}) AND ({filter_clause})"
+
         async with self.app.asyncio(connections=connection_count) as session:
             query_embedding = self.format_q_embs(q_emb)
 
@@ -153,7 +248,7 @@ class VespaQueryClient:
             response: VespaQueryResponse = await session.query(
                 body={
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where userQuery();"
+                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where {where_clause};"
                     ),
                     "ranking": self.get_rank_profile("bm25", sim_map),
                     "query": query,
@@ -244,6 +339,7 @@ class VespaQueryClient:
         rerank: bool = False,
         rerank_hits: int = 20,
         final_hits: int = 3,
+        filters: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Get query results from Vespa based on the ranking method.
@@ -256,6 +352,16 @@ class VespaQueryClient:
             rerank (bool): Whether to perform application-level reranking.
             rerank_hits (int): Number of candidates to fetch for reranking.
             final_hits (int): Number of final results to return after reranking.
+            filters (dict, optional): Metadata filters for narrowing search results.
+                Supported filters:
+                - source_system: str - Filter by source (procore, sharepoint, etc.)
+                - project_id: str - Filter by project
+                - category: str or list - Filter by document category
+                - discipline: str or list - Filter by discipline
+                - status: str or list - Filter by document status
+                - company: str - Filter by vendor/company
+                - file_type: str or list - Filter by file extension
+                - is_current_revision: bool - Only current revisions
 
         Returns:
             Dict[str, Any]: The query results.
@@ -279,6 +385,7 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                filters=filters,
             )
         elif rank_method == "hybrid":  # Hybrid ColPali+BM25
             result = await self.query_vespa_colpali(
@@ -288,9 +395,12 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                filters=filters,
             )
         elif rank_method == "bm25":
-            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map, hits=hits_to_fetch)
+            result = await self.query_vespa_bm25(
+                query, q_embs, sim_map=sim_map, hits=hits_to_fetch, filters=filters
+            )
         else:
             raise ValueError(f"Unsupported ranking: {rank_method}")
 
@@ -447,6 +557,7 @@ class VespaQueryClient:
         timeout: str = None,
         sim_map: bool = False,
         include_embedding: bool = False,
+        filters: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> dict:
         """
@@ -462,6 +573,7 @@ class VespaQueryClient:
             timeout (str, optional): Query timeout. Defaults to "10s".
             sim_map (bool, optional): Whether to return similarity map features. Defaults to False.
             include_embedding (bool, optional): Whether to include embeddings for reranking. Defaults to False.
+            filters (dict, optional): Metadata filters (see build_filter_clause).
 
         Returns:
             dict: The formatted query results.
@@ -474,6 +586,10 @@ class VespaQueryClient:
         timeout = timeout or get("vespa", "query_timeout")
         connection_count = get("vespa", "connection_count")
         rerank_count = get("vespa", "rerank_count")
+
+        # Build filter clause
+        filter_clause = self.build_filter_clause(filters)
+
         async with self.app.asyncio(connections=connection_count) as session:
             float_query_embedding = self.format_q_embs(q_emb)
             binary_query_embeddings = self.float_to_binary_embedding(
@@ -489,12 +605,18 @@ class VespaQueryClient:
                 binary_query_embeddings, target_hits_per_query_tensor
             )
             query_tensors.update(nn_query_dict)
+
+            # Build where clause with optional filters
+            where_clause = f"{nn_string} or userQuery()"
+            if filter_clause:
+                where_clause = f"({where_clause}) AND ({filter_clause})"
+
             response: VespaQueryResponse = await session.query(
                 body={
                     **query_tensors,
                     "presentation.timing": True,
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {nn_string} or userQuery()"
+                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {where_clause}"
                     ),
                     "ranking.profile": self.get_rank_profile(
                         ranking=ranking, sim_map=sim_map

@@ -1,6 +1,8 @@
 """
 Ingestion module for processing PDFs and images with ColPali embeddings.
 Extracts core functionality from scripts/feed_data.py for on-demand upload processing.
+
+Supports rich metadata from source connectors for filtering and organization.
 """
 
 import base64
@@ -9,7 +11,7 @@ import io
 import json
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, TYPE_CHECKING
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -22,6 +24,9 @@ from backend.drawing_regions import (
     detect_and_extract_regions,
     should_detect_regions,
 )
+
+if TYPE_CHECKING:
+    from backend.ingestion.connectors.base import FileMetadata
 
 logger = get_logger(__name__)
 
@@ -204,6 +209,22 @@ def generate_doc_id(pdf_bytes: bytes, title: str) -> str:
     return f"{safe_title}_{content_hash}"
 
 
+def build_metadata_fields(metadata: Optional["FileMetadata"]) -> dict[str, Any]:
+    """
+    Build Vespa document fields from connector metadata.
+
+    Args:
+        metadata: Optional FileMetadata from a source connector
+
+    Returns:
+        Dictionary of field names to values for Vespa document
+    """
+    if metadata is None:
+        return {}
+
+    return metadata.to_vespa_fields()
+
+
 def ingest_pdf(
     file_bytes: bytes,
     filename: str,
@@ -220,6 +241,7 @@ def ingest_pdf(
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
     s3_key: Optional[str] = None,
+    metadata: Optional["FileMetadata"] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -242,6 +264,8 @@ def ingest_pdf(
         use_vlm_detection: Use VLM for semantic region labeling (via OpenRouter/OpenAI/Ollama)
         vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
         detection_method: Region detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        s3_key: Optional S3 key for original file reference
+        metadata: Optional FileMetadata from source connector for filtering fields
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -259,6 +283,9 @@ def ingest_pdf(
         batch_size = get("ingestion", "batch_size")
     snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
     render_dpi = get("image", "dpi")
+
+    # Build metadata fields from connector
+    metadata_fields = build_metadata_fields(metadata)
 
     # Step 1: Validate PDF
     is_valid, validation_msg = validate_pdf(file_bytes)
@@ -328,30 +355,35 @@ def ingest_pdf(
                     if not is_full_page and region_meta.label:
                         snippet = f"[{region_meta.label}] {snippet}"
 
+                    # Build base fields
+                    doc_fields = {
+                        "id": doc_id,
+                        "url": filename,
+                        "title": title,
+                        "page_number": page_num + 1,
+                        "text": page_text if is_full_page else "",
+                        "snippet": snippet,
+                        "description": description,
+                        "tags": tags,
+                        "blur_image": create_blur_image(region_img),
+                        "full_image": image_to_base64(region_img),
+                        "embedding": bin_emb,
+                        "embedding_float": float_emb,
+                        "questions": [],
+                        "queries": [],
+                        "is_region": not is_full_page,
+                        "parent_doc_id": page_doc_id if not is_full_page else "",
+                        "region_label": region_meta.label if not is_full_page else "",
+                        "region_type": region_meta.region_type,
+                        "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                        "s3_key": s3_key or "",
+                    }
+                    # Add connector metadata fields for filtering
+                    doc_fields.update(metadata_fields)
+
                     vespa_doc = {
                         "id": doc_id,
-                        "fields": {
-                            "id": doc_id,
-                            "url": filename,
-                            "title": title,
-                            "page_number": page_num + 1,
-                            "text": page_text if is_full_page else "",
-                            "snippet": snippet,
-                            "description": description,
-                            "tags": tags,
-                            "blur_image": create_blur_image(region_img),
-                            "full_image": image_to_base64(region_img),
-                            "embedding": bin_emb,
-                            "embedding_float": float_emb,
-                            "questions": [],
-                            "queries": [],
-                            "is_region": not is_full_page,
-                            "parent_doc_id": page_doc_id if not is_full_page else "",
-                            "region_label": region_meta.label if not is_full_page else "",
-                            "region_type": region_meta.region_type,
-                            "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
-                            "s3_key": s3_key or "",
-                        },
+                        "fields": doc_fields,
                     }
 
                     _, success, error = feed_document(vespa_app, vespa_doc)
@@ -374,30 +406,35 @@ def ingest_pdf(
                 if not snippet:
                     snippet = f"Page {page_num + 1} of {filename}"
 
+                # Build base fields
+                doc_fields = {
+                    "id": page_doc_id,
+                    "url": filename,
+                    "title": title,
+                    "page_number": page_num + 1,
+                    "text": page_text,
+                    "snippet": snippet,
+                    "description": description,
+                    "tags": tags,
+                    "blur_image": create_blur_image(image),
+                    "full_image": image_to_base64(image),
+                    "embedding": bin_emb,
+                    "embedding_float": float_emb,
+                    "questions": [],
+                    "queries": [],
+                    "is_region": False,
+                    "parent_doc_id": "",
+                    "region_label": "",
+                    "region_type": "full_page",
+                    "region_bbox": "",
+                    "s3_key": s3_key or "",
+                }
+                # Add connector metadata fields for filtering
+                doc_fields.update(metadata_fields)
+
                 vespa_doc = {
                     "id": page_doc_id,
-                    "fields": {
-                        "id": page_doc_id,
-                        "url": filename,
-                        "title": title,
-                        "page_number": page_num + 1,
-                        "text": page_text,
-                        "snippet": snippet,
-                        "description": description,
-                        "tags": tags,
-                        "blur_image": create_blur_image(image),
-                        "full_image": image_to_base64(image),
-                        "embedding": bin_emb,
-                        "embedding_float": float_emb,
-                        "questions": [],
-                        "queries": [],
-                        "is_region": False,
-                        "parent_doc_id": "",
-                        "region_label": "",
-                        "region_type": "full_page",
-                        "region_bbox": "",
-                        "s3_key": s3_key or "",
-                    },
+                    "fields": doc_fields,
                 }
 
                 _, success, error = feed_document(vespa_app, vespa_doc)
@@ -448,6 +485,7 @@ def ingest_image(
     tags: Optional[List[str]] = None,
     batch_size: int = None,
     s3_key: Optional[str] = None,
+    metadata: Optional["FileMetadata"] = None,
 ) -> Tuple[bool, str, int]:
     """
     Ingest a single image file (JPG, PNG, GIF, TIFF) with ColPali embeddings.
@@ -467,6 +505,7 @@ def ingest_image(
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
         s3_key: Optional S3 key for original file reference
+        metadata: Optional FileMetadata from source connector for filtering fields
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -507,30 +546,38 @@ def ingest_image(
     if len(snippet) > snippet_ingest_length:
         snippet = snippet[:snippet_ingest_length] + "..."
 
+    # Build metadata fields from connector
+    metadata_fields = build_metadata_fields(metadata)
+
+    # Build base fields
+    doc_fields = {
+        "id": doc_id,
+        "url": filename,
+        "title": title,
+        "page_number": 1,
+        "text": "",
+        "snippet": snippet,
+        "description": description,
+        "tags": tags,
+        "blur_image": create_blur_image(image),
+        "full_image": image_to_base64(image),
+        "embedding": bin_emb,
+        "embedding_float": float_emb,
+        "questions": [],
+        "queries": [],
+        "is_region": False,
+        "parent_doc_id": "",
+        "region_label": "",
+        "region_type": "full_page",
+        "region_bbox": "",
+        "s3_key": s3_key or "",
+    }
+    # Add connector metadata fields for filtering
+    doc_fields.update(metadata_fields)
+
     vespa_doc = {
         "id": doc_id,
-        "fields": {
-            "id": doc_id,
-            "url": filename,
-            "title": title,
-            "page_number": 1,
-            "text": "",
-            "snippet": snippet,
-            "description": description,
-            "tags": tags,
-            "blur_image": create_blur_image(image),
-            "full_image": image_to_base64(image),
-            "embedding": bin_emb,
-            "embedding_float": float_emb,
-            "questions": [],
-            "queries": [],
-            "is_region": False,
-            "parent_doc_id": "",
-            "region_label": "",
-            "region_type": "full_page",
-            "region_bbox": "",
-            "s3_key": s3_key or "",
-        },
+        "fields": doc_fields,
     }
 
     _, success, error = feed_document(vespa_app, vespa_doc)

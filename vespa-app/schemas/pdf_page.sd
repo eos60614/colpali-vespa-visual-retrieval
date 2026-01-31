@@ -85,6 +85,90 @@ schema pdf_page {
         field s3_key type string {
             indexing: summary | attribute
         }
+
+        # Source system metadata for filtering
+        field source_system type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field source_id type string {
+            indexing: summary | attribute
+        }
+        field source_url type string {
+            indexing: summary
+        }
+
+        # Project/hierarchy for filtering
+        field project_id type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field project_name type string {
+            indexing: summary | index
+            match: text
+        }
+        field folder_path type string {
+            indexing: summary | attribute
+        }
+
+        # Classification for filtering
+        field category type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field document_type type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field discipline type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field status type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field revision type string {
+            indexing: summary | attribute
+        }
+        field is_current_revision type bool {
+            indexing: summary | attribute
+        }
+        field document_number type string {
+            indexing: summary | index
+            match: text
+        }
+
+        # Attribution for filtering
+        field author type string {
+            indexing: summary | attribute
+        }
+        field company type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field company_id type string {
+            indexing: summary | attribute
+        }
+
+        # File properties
+        field filename type string {
+            indexing: summary | index
+            match: text
+        }
+        field file_type type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+
+        # Timestamps from source system
+        field source_created_at type long {
+            indexing: summary | attribute
+        }
+        field source_modified_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
     }
 
     fieldset default {

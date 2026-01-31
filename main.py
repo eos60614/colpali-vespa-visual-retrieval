@@ -169,7 +169,18 @@ async def api_suggestions(request):
 async def api_search(request):
     """JSON search endpoint for the Next.js frontend.
 
-    Accepts JSON body: { query, ranking? }
+    Accepts JSON body: { query, ranking?, filters? }
+
+    Filters (all optional):
+        - source_system: str - Filter by source (procore, sharepoint, etc.)
+        - project_id: str - Filter by project
+        - category: str or list - Filter by document category (drawing, photo, etc.)
+        - discipline: str or list - Filter by discipline (architectural, structural, etc.)
+        - status: str or list - Filter by document status (draft, approved, etc.)
+        - company: str - Filter by vendor/company
+        - file_type: str or list - Filter by file extension (pdf, jpg, etc.)
+        - is_current_revision: bool - Only current revisions
+
     Returns JSON with search results including blur images and doc IDs.
     """
     try:
@@ -179,6 +190,7 @@ async def api_search(request):
 
     query = body.get("query", "").strip()
     ranking = body.get("ranking", "hybrid")
+    filters = body.get("filters")  # Optional dict of metadata filters
 
     if not query:
         return JSONResponse({"error": "Query is required"}, status_code=400)
@@ -197,6 +209,7 @@ async def api_search(request):
         rerank=True,
         rerank_hits=get("search", "rerank_hits"),
         final_hits=get("search", "final_hits"),
+        filters=filters,
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
