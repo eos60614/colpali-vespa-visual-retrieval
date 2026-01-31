@@ -85,10 +85,90 @@ schema pdf_page {
         field s3_key type string {
             indexing: summary | attribute
         }
+
+        # Dual text extraction fields
+        field text_layer type string {
+            indexing: summary | index
+            index: enable-bm25
+            match: text
+            summary: dynamic
+        }
+        field text_ocr type string {
+            indexing: summary | index
+            index: enable-bm25
+            match: text
+            summary: dynamic
+        }
+        field text_extraction_method type string {
+            indexing: summary | attribute
+        }
+        field ocr_confidence type float {
+            indexing: summary | attribute
+        }
+
+        # Document-level metadata (from PDF properties)
+        field doc_author type string {
+            indexing: summary | index
+            match: text
+        }
+        field doc_subject type string {
+            indexing: summary | index
+            match: text
+        }
+        field doc_keywords type array<string> {
+            indexing: summary | index
+            index: enable-bm25
+            match: text
+        }
+        field doc_creator type string {
+            indexing: summary | attribute
+        }
+        field doc_producer type string {
+            indexing: summary | attribute
+        }
+        field doc_created_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field doc_modified_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field doc_page_count type int {
+            indexing: summary | attribute
+        }
+
+        # Page dimension metadata
+        field page_width_px type int {
+            indexing: summary | attribute
+        }
+        field page_height_px type int {
+            indexing: summary | attribute
+        }
+        field page_size_category type string {
+            indexing: summary | attribute
+        }
+        field page_orientation type string {
+            indexing: summary | attribute
+        }
+
+        # Processing metadata
+        field ingested_at type long {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field embedding_model type string {
+            indexing: summary | attribute
+        }
+
+        # Custom metadata map for user-defined fields
+        field custom_metadata type map<string, string> {
+            indexing: summary | attribute
+        }
     }
 
     fieldset default {
-        fields: title, text
+        fields: title, text, text_layer, text_ocr, doc_author, doc_subject, doc_keywords
     }
 
     document-summary suggestions {

@@ -1,6 +1,11 @@
 """
 Ingestion module for processing PDFs and images with ColPali embeddings.
 Extracts core functionality from scripts/feed_data.py for on-demand upload processing.
+
+Enhanced with:
+- Smart page size detection and adaptive DPI
+- Dual text extraction (layer + OCR)
+- Rich metadata extraction for queryable fields
 """
 
 import base64
@@ -8,8 +13,9 @@ import hashlib
 import io
 import json
 import re
+import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -21,6 +27,28 @@ from backend.logging_config import get_logger
 from backend.drawing_regions import (
     detect_and_extract_regions,
     should_detect_regions,
+)
+from backend.page_sizing import (
+    PageSizeCategory,
+    analyze_pdf_page,
+    categorize_image,
+    format_page_dimensions,
+    get_adaptive_dpi,
+)
+from backend.text_extraction import (
+    TextExtractionResult,
+    extract_text,
+    format_text_metadata,
+    sanitize_text,
+)
+from backend.metadata_extraction import (
+    CustomMetadata,
+    create_processing_metadata,
+    extract_document_metadata,
+    extract_page_metadata,
+    format_document_metadata,
+    format_page_metadata,
+    merge_metadata,
 )
 
 logger = get_logger(__name__)
@@ -67,28 +95,19 @@ def float_to_binary_embedding(float_embedding: np.ndarray) -> list:
     return binary.tolist()
 
 
-def sanitize_text(text: str) -> str:
-    """Remove illegal control characters from extracted PDF text.
-
-    Vespa rejects text containing certain control characters like null (0x0).
-    This removes all ASCII control characters except common whitespace.
-    """
-    if not text:
-        return text
-    # Remove ASCII control chars (0x00-0x1F and 0x7F) except tab, newline, carriage return
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
-
-
 def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
     """
     Render a single fitz.Page to a PIL Image and extract its text.
+
+    Note: For full text extraction with OCR support, use extract_text()
+    from backend.text_extraction instead.
 
     Args:
         page: fitz.Page object
         dpi: Rendering DPI
 
     Returns:
-        Tuple of (PIL Image, sanitized text)
+        Tuple of (PIL Image, sanitized layer text)
     """
     if dpi is None:
         dpi = get("image", "dpi")
@@ -220,9 +239,16 @@ def ingest_pdf(
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
     s3_key: Optional[str] = None,
+    custom_metadata: Optional[Dict[str, str]] = None,
+    enable_ocr: Optional[bool] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
+
+    Enhanced with:
+    - Smart page size detection with adaptive DPI
+    - Dual text extraction (layer + OCR)
+    - Rich metadata extraction for queryable fields
 
     For large-format drawings, optionally detects sub-regions (elevations, details,
     tables) and embeds each region separately for better ColPali patch coverage.
@@ -239,13 +265,18 @@ def ingest_pdf(
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
         detect_drawing_regions: Enable region detection for large drawings
-        use_vlm_detection: Use VLM for semantic region labeling (via OpenRouter/OpenAI/Ollama)
-        vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
-        detection_method: Region detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        use_vlm_detection: Use VLM for semantic region labeling
+        vlm_api_key: API key for VLM
+        detection_method: Region detection strategy
+        s3_key: Optional S3 key for file reference
+        custom_metadata: Optional dict of custom metadata key-value pairs
+        enable_ocr: Override OCR setting (None = use config)
 
     Returns:
         Tuple of (success, message, pages_indexed)
     """
+    start_time = time.time()
+
     # Default title from filename
     if title is None or title.strip() == "":
         title = Path(filename).stem
@@ -258,7 +289,12 @@ def ingest_pdf(
     if batch_size is None:
         batch_size = get("ingestion", "batch_size")
     snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
-    render_dpi = get("image", "dpi")
+
+    # Check if metadata extraction is enabled
+    try:
+        extract_metadata = get("ingestion", "metadata", "extract_pdf_metadata")
+    except (KeyError, TypeError):
+        extract_metadata = True
 
     # Step 1: Validate PDF
     is_valid, validation_msg = validate_pdf(file_bytes)
@@ -268,7 +304,7 @@ def ingest_pdf(
     # Step 2: Generate base document ID
     base_doc_id = generate_doc_id(file_bytes, title)
 
-    # Step 3: Open PDF and process pages (keep doc open for vector analysis)
+    # Step 3: Open PDF and process pages
     docs_indexed = 0
     failed_docs = []
 
@@ -281,14 +317,55 @@ def ingest_pdf(
         doc.close()
         return False, "PDF has no pages", 0
 
+    # Extract document-level metadata
+    doc_metadata = {}
+    if extract_metadata:
+        doc_meta = extract_document_metadata(doc)
+        doc_metadata = format_document_metadata(doc_meta)
+
+    # Prepare processing metadata
+    processing_metadata = create_processing_metadata()
+
+    # Prepare custom metadata
+    custom_meta_dict = custom_metadata or {}
+
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
-            image, page_text = render_page(page, dpi=render_dpi)
+
+            # Analyze page for adaptive processing
+            page_analysis = analyze_pdf_page(page)
+            render_dpi = page_analysis.recommended_dpi
+
+            # Render page at optimal DPI
+            image, _ = render_page(page, dpi=render_dpi)
             page_doc_id = f"{base_doc_id}_page_{page_num + 1}"
 
+            # Extract text with dual method (layer + OCR)
+            force_ocr = enable_ocr if enable_ocr is not None else False
+            text_result = extract_text(page, image, force_ocr=force_ocr)
+            page_text = text_result.merged_text
+
+            # Extract page-level metadata
+            page_meta = extract_page_metadata(
+                page, page_num + 1, image.width, image.height
+            )
+            page_metadata = format_page_metadata(page_meta)
+
+            # Add page size category from analysis
+            page_metadata["page_size_category"] = page_analysis.category.value
+            page_metadata["page_orientation"] = page_analysis.orientation.value
+
+            # Format text extraction metadata
+            text_metadata = format_text_metadata(text_result)
+
             # Determine if this page needs region detection
-            if detect_drawing_regions and should_detect_regions(image):
+            needs_regions = detect_drawing_regions and (
+                should_detect_regions(image) or
+                page_analysis.category in (PageSizeCategory.OVERSIZED, PageSizeCategory.MASSIVE)
+            )
+
+            if needs_regions:
                 # Pass fitz.Page for vector analysis
                 region_results = detect_and_extract_regions(
                     image,
@@ -299,7 +376,7 @@ def ingest_pdf(
                 )
                 logger.info(
                     f"Page {page_num + 1}: detected {len(region_results)} regions "
-                    f"(image size: {image.size[0]}x{image.size[1]})"
+                    f"(size: {page_analysis.category.value}, {image.size[0]}x{image.size[1]})"
                 )
 
                 # Generate embeddings for all region images
@@ -328,31 +405,41 @@ def ingest_pdf(
                     if not is_full_page and region_meta.label:
                         snippet = f"[{region_meta.label}] {snippet}"
 
-                    vespa_doc = {
+                    # Build document fields with all metadata
+                    fields = {
                         "id": doc_id,
-                        "fields": {
-                            "id": doc_id,
-                            "url": filename,
-                            "title": title,
-                            "page_number": page_num + 1,
-                            "text": page_text if is_full_page else "",
-                            "snippet": snippet,
-                            "description": description,
-                            "tags": tags,
-                            "blur_image": create_blur_image(region_img),
-                            "full_image": image_to_base64(region_img),
-                            "embedding": bin_emb,
-                            "embedding_float": float_emb,
-                            "questions": [],
-                            "queries": [],
-                            "is_region": not is_full_page,
-                            "parent_doc_id": page_doc_id if not is_full_page else "",
-                            "region_label": region_meta.label if not is_full_page else "",
-                            "region_type": region_meta.region_type,
-                            "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
-                            "s3_key": s3_key or "",
-                        },
+                        "url": filename,
+                        "title": title,
+                        "page_number": page_num + 1,
+                        "text": page_text if is_full_page else "",
+                        "text_layer": text_result.layer_text if is_full_page else "",
+                        "text_ocr": text_result.ocr_text if is_full_page else "",
+                        "snippet": snippet,
+                        "description": description,
+                        "tags": tags,
+                        "blur_image": create_blur_image(region_img),
+                        "full_image": image_to_base64(region_img),
+                        "embedding": bin_emb,
+                        "embedding_float": float_emb,
+                        "questions": [],
+                        "queries": [],
+                        "is_region": not is_full_page,
+                        "parent_doc_id": page_doc_id if not is_full_page else "",
+                        "region_label": region_meta.label if not is_full_page else "",
+                        "region_type": region_meta.region_type,
+                        "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                        "s3_key": s3_key or "",
                     }
+
+                    # Merge in metadata
+                    fields.update(doc_metadata)
+                    fields.update(page_metadata)
+                    fields.update(text_metadata)
+                    fields.update(processing_metadata)
+                    if custom_meta_dict:
+                        fields["custom_metadata"] = custom_meta_dict
+
+                    vespa_doc = {"id": doc_id, "fields": fields}
 
                     _, success, error = feed_document(vespa_app, vespa_doc)
                     if success:
@@ -374,31 +461,41 @@ def ingest_pdf(
                 if not snippet:
                     snippet = f"Page {page_num + 1} of {filename}"
 
-                vespa_doc = {
+                # Build document fields with all metadata
+                fields = {
                     "id": page_doc_id,
-                    "fields": {
-                        "id": page_doc_id,
-                        "url": filename,
-                        "title": title,
-                        "page_number": page_num + 1,
-                        "text": page_text,
-                        "snippet": snippet,
-                        "description": description,
-                        "tags": tags,
-                        "blur_image": create_blur_image(image),
-                        "full_image": image_to_base64(image),
-                        "embedding": bin_emb,
-                        "embedding_float": float_emb,
-                        "questions": [],
-                        "queries": [],
-                        "is_region": False,
-                        "parent_doc_id": "",
-                        "region_label": "",
-                        "region_type": "full_page",
-                        "region_bbox": "",
-                        "s3_key": s3_key or "",
-                    },
+                    "url": filename,
+                    "title": title,
+                    "page_number": page_num + 1,
+                    "text": page_text,
+                    "text_layer": text_result.layer_text,
+                    "text_ocr": text_result.ocr_text,
+                    "snippet": snippet,
+                    "description": description,
+                    "tags": tags,
+                    "blur_image": create_blur_image(image),
+                    "full_image": image_to_base64(image),
+                    "embedding": bin_emb,
+                    "embedding_float": float_emb,
+                    "questions": [],
+                    "queries": [],
+                    "is_region": False,
+                    "parent_doc_id": "",
+                    "region_label": "",
+                    "region_type": "full_page",
+                    "region_bbox": "",
+                    "s3_key": s3_key or "",
                 }
+
+                # Merge in metadata
+                fields.update(doc_metadata)
+                fields.update(page_metadata)
+                fields.update(text_metadata)
+                fields.update(processing_metadata)
+                if custom_meta_dict:
+                    fields["custom_metadata"] = custom_meta_dict
+
+                vespa_doc = {"id": page_doc_id, "fields": fields}
 
                 _, success, error = feed_document(vespa_app, vespa_doc)
                 if success:
@@ -408,12 +505,13 @@ def ingest_pdf(
     finally:
         doc.close()
 
+    elapsed = time.time() - start_time
     if docs_indexed == 0:
         return False, f"Failed to index any documents. Errors: {failed_docs}", 0
     elif failed_docs:
-        return True, f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.", docs_indexed
+        return True, f"Indexed {docs_indexed} documents in {elapsed:.1f}s. {len(failed_docs)} failed.", docs_indexed
     else:
-        return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed
+        return True, f"Successfully indexed {docs_indexed} documents in {elapsed:.1f}s.", docs_indexed
 
 
 # Processable image extensions (ColPali accepts any PIL-compatible image)
@@ -448,6 +546,7 @@ def ingest_image(
     tags: Optional[List[str]] = None,
     batch_size: int = None,
     s3_key: Optional[str] = None,
+    custom_metadata: Optional[Dict[str, str]] = None,
 ) -> Tuple[bool, str, int]:
     """
     Ingest a single image file (JPG, PNG, GIF, TIFF) with ColPali embeddings.
@@ -467,10 +566,13 @@ def ingest_image(
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
         s3_key: Optional S3 key for original file reference
+        custom_metadata: Optional dict of custom metadata key-value pairs
 
     Returns:
         Tuple of (success, message, pages_indexed)
     """
+    start_time = time.time()
+
     if title is None or title.strip() == "":
         title = Path(filename).stem
     if tags is None:
@@ -502,39 +604,61 @@ def ingest_image(
     except Exception as e:
         return False, f"Embedding generation failed: {str(e)}", 0
 
-    # Step 5: Build and feed Vespa document
+    # Step 5: Analyze page size
+    size_category = categorize_image(image)
+
+    # Step 6: Build processing metadata
+    processing_metadata = create_processing_metadata()
+
+    # Step 7: Build and feed Vespa document
     snippet = filename
     if len(snippet) > snippet_ingest_length:
         snippet = snippet[:snippet_ingest_length] + "..."
 
-    vespa_doc = {
+    fields = {
         "id": doc_id,
-        "fields": {
-            "id": doc_id,
-            "url": filename,
-            "title": title,
-            "page_number": 1,
-            "text": "",
-            "snippet": snippet,
-            "description": description,
-            "tags": tags,
-            "blur_image": create_blur_image(image),
-            "full_image": image_to_base64(image),
-            "embedding": bin_emb,
-            "embedding_float": float_emb,
-            "questions": [],
-            "queries": [],
-            "is_region": False,
-            "parent_doc_id": "",
-            "region_label": "",
-            "region_type": "full_page",
-            "region_bbox": "",
-            "s3_key": s3_key or "",
-        },
+        "url": filename,
+        "title": title,
+        "page_number": 1,
+        "text": "",
+        "text_layer": "",
+        "text_ocr": "",
+        "snippet": snippet,
+        "description": description,
+        "tags": tags,
+        "blur_image": create_blur_image(image),
+        "full_image": image_to_base64(image),
+        "embedding": bin_emb,
+        "embedding_float": float_emb,
+        "questions": [],
+        "queries": [],
+        "is_region": False,
+        "parent_doc_id": "",
+        "region_label": "",
+        "region_type": "full_page",
+        "region_bbox": "",
+        "s3_key": s3_key or "",
+        # Image metadata
+        "page_width_px": image.width,
+        "page_height_px": image.height,
+        "page_size_category": size_category.value,
+        "page_orientation": "landscape" if image.width > image.height else "portrait",
+        "text_extraction_method": "none",
     }
 
+    # Add processing metadata
+    fields.update(processing_metadata)
+
+    # Add custom metadata
+    if custom_metadata:
+        fields["custom_metadata"] = custom_metadata
+
+    vespa_doc = {"id": doc_id, "fields": fields}
+
     _, success, error = feed_document(vespa_app, vespa_doc)
+    elapsed = time.time() - start_time
+
     if success:
-        return True, f"Successfully indexed image {filename}.", 1
+        return True, f"Successfully indexed image {filename} in {elapsed:.1f}s.", 1
     else:
         return False, f"Failed to feed image to Vespa: {error}", 0

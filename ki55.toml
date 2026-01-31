@@ -172,6 +172,29 @@ default_port = 5432
 doc_id_hash_length = 12
 doc_id_slug_max_length = 30
 
+[ingestion.text_extraction]
+enable_ocr = true                    # Enable OCR for scanned documents
+ocr_engine = "pymupdf"               # "pymupdf" (requires tesseract), "tesseract", "none"
+ocr_languages = ["eng"]              # Tesseract language codes
+ocr_confidence_threshold = 0.5       # Minimum confidence to use OCR text
+layer_text_min_coverage = 0.1        # Min text coverage before triggering OCR
+always_run_ocr = false               # Run OCR even if layer text exists
+
+[ingestion.page_sizing]
+adaptive_dpi = true                  # Adjust DPI based on page size
+standard_max_pixels = 1_000_000      # < 1M = standard (A4/Letter)
+large_max_pixels = 3_000_000         # 1M-3M = large (Tabloid/A3)
+oversized_max_pixels = 10_000_000    # 3M-10M = oversized (Architectural)
+standard_dpi = 150                   # DPI for standard pages
+large_dpi = 120                      # DPI for large pages
+oversized_dpi = 100                  # DPI for oversized pages
+massive_dpi = 72                     # DPI for massive pages (>10M pixels)
+
+[ingestion.metadata]
+extract_pdf_metadata = true          # Extract author, dates, keywords from PDF
+extract_page_dimensions = true       # Store page width/height
+store_processing_metadata = true     # Store ingestion timestamp, model used
+
 [ingestion.files]
 max_file_size_mb = 100
 supported_types = ["pdf", "jpg", "jpeg", "png", "gif", "tiff"]
