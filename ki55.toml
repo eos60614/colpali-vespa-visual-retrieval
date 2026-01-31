@@ -171,6 +171,12 @@ pool_min_size = 1
 default_port = 5432
 doc_id_hash_length = 12
 doc_id_slug_max_length = 30
+# Default processing features enabled during document ingestion
+detect_regions = true          # Auto-detect and split large drawings into regions
+use_vlm_labeling = false       # Use VLM to semantically label detected regions (requires API key)
+detection_method = "auto"      # Region detection strategy: "auto", "pdf_vector", "heuristic", "vlm_legacy"
+ocr_enabled = true             # Run OCR on pages with little/no extractable text
+ocr_min_text_length = 50       # If extracted text is shorter than this, run OCR
 
 [ingestion.files]
 max_file_size_mb = 100
@@ -197,3 +203,10 @@ max_items = 5
 
 [s3]
 presigned_url_expiry_seconds = 3600
+
+[ocr]
+# Tesseract OCR settings for scanned document text extraction
+language = "eng"               # Tesseract language code(s), e.g., "eng+fra" for multiple
+timeout_seconds = 30           # Timeout per page for OCR processing
+page_segmentation_mode = 3     # PSM: 3=auto, 6=single block, 11=sparse text
+oem = 3                        # OCR Engine Mode: 3=default (LSTM + legacy)

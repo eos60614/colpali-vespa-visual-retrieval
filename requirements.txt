@@ -535,3 +535,6 @@ pytest>=9.0.0
     # via visual-retrieval-colpali (testing)
 pytest-asyncio>=1.0.0
     # via visual-retrieval-colpali (testing)
+# OCR support for scanned documents
+pytesseract>=0.3.10
+    # via visual-retrieval-colpali (document processing)

@@ -83,7 +83,7 @@ Browser → Next.js (web/) → JSON API routes → Starlette (main.py)
 
 **`backend/colpali.py`** — `SimMapGenerator` class. Loads the ColQwen2.5 model (`tsystems/colqwen2.5-3b-multilingual-v1.0`) with bfloat16. Query embeddings cached via `@lru_cache(maxsize=128)`. Generates similarity map heatmaps by blending viridis colormaps onto page images. CPU-bound inference runs in ThreadPoolExecutor.
 
-**`backend/ingest.py`** — PDF ingestion pipeline. Validates → renders pages at 150 DPI (PyMuPDF) → extracts text → generates embeddings (binary int8 + float f32) → creates blur previews → feeds to Vespa. Supports region detection for large-format drawings (>2.8M pixels).
+**`backend/ingest.py`** — PDF/image ingestion pipeline with default processing features enabled. Pipeline: validates → renders pages at 150 DPI (PyMuPDF) → extracts text (with OCR fallback for scanned documents) → detects and splits large drawing regions → generates embeddings (binary int8 + float f32) → creates blur previews → feeds to Vespa. Default features (configurable in `ki55.toml` `[ingestion]`): region detection for large drawings (>2.8M pixels), OCR via pytesseract when native text extraction yields <50 chars.
 
 **`backend/drawing_regions.py`** — Region detection for large architectural/construction drawings. Two strategies: heuristic (whitespace-based grid segmentation) and VLM-assisted (sends image to LLM for semantic bounding boxes). Falls back to tiling if heuristic finds <2 regions. Each region becomes a separate Vespa document linked to its parent page.
 

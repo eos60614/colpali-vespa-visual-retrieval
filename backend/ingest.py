@@ -25,6 +25,104 @@ from backend.drawing_regions import (
 
 logger = get_logger(__name__)
 
+# OCR availability flag
+_ocr_available = None
+
+
+def _check_ocr_available() -> bool:
+    """Check if pytesseract and tesseract binary are available."""
+    global _ocr_available
+    if _ocr_available is not None:
+        return _ocr_available
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        _ocr_available = True
+        logger.info("OCR support enabled (tesseract found)")
+    except Exception as e:
+        _ocr_available = False
+        logger.warning(f"OCR support disabled: {e}")
+    return _ocr_available
+
+
+def perform_ocr(image: Image.Image) -> str:
+    """
+    Perform OCR on an image using pytesseract.
+
+    Args:
+        image: PIL Image to extract text from
+
+    Returns:
+        Extracted text string, or empty string if OCR fails
+    """
+    if not _check_ocr_available():
+        return ""
+
+    try:
+        import pytesseract
+
+        lang = get("ocr", "language")
+        timeout = get("ocr", "timeout_seconds")
+        psm = get("ocr", "page_segmentation_mode")
+        oem = get("ocr", "oem")
+
+        config = f"--psm {psm} --oem {oem}"
+        text = pytesseract.image_to_string(
+            image,
+            lang=lang,
+            timeout=timeout,
+            config=config,
+        )
+        return sanitize_text(text.strip())
+    except Exception as e:
+        logger.warning(f"OCR failed: {e}")
+        return ""
+
+
+def extract_text_with_ocr(
+    page_image: Image.Image,
+    pdf_text: str,
+    ocr_enabled: bool = None,
+    min_text_length: int = None,
+) -> str:
+    """
+    Extract text from a page, falling back to OCR if native text is insufficient.
+
+    Args:
+        page_image: Rendered page image
+        pdf_text: Text extracted from PDF via PyMuPDF
+        ocr_enabled: Whether OCR fallback is enabled (from config if None)
+        min_text_length: Minimum text length before triggering OCR (from config if None)
+
+    Returns:
+        Extracted text (from PDF or OCR)
+    """
+    if ocr_enabled is None:
+        ocr_enabled = get("ingestion", "ocr_enabled")
+    if min_text_length is None:
+        min_text_length = get("ingestion", "ocr_min_text_length")
+
+    # If we have sufficient text from PDF extraction, use it
+    if pdf_text and len(pdf_text) >= min_text_length:
+        return pdf_text
+
+    # If OCR is disabled, return whatever text we have
+    if not ocr_enabled:
+        return pdf_text
+
+    # Try OCR
+    ocr_text = perform_ocr(page_image)
+
+    # Return the longer of the two
+    if len(ocr_text) > len(pdf_text):
+        logger.debug(
+            f"Using OCR text ({len(ocr_text)} chars) over PDF text ({len(pdf_text)} chars)"
+        )
+        return ocr_text
+
+    return pdf_text
+
 
 def validate_pdf(file_bytes: bytes) -> Tuple[bool, str]:
     """
@@ -76,7 +174,7 @@ def sanitize_text(text: str) -> str:
     if not text:
         return text
     # Remove ASCII control chars (0x00-0x1F and 0x7F) except tab, newline, carriage return
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
 
 def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
@@ -98,7 +196,9 @@ def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
     return img, text
 
 
-def pdf_to_images(file_bytes: bytes, dpi: int = None) -> Tuple[List[Image.Image], List[str]]:
+def pdf_to_images(
+    file_bytes: bytes, dpi: int = None
+) -> Tuple[List[Image.Image], List[str]]:
     """
     Convert PDF bytes to list of PIL Images and extracted text per page.
 
@@ -120,7 +220,9 @@ def pdf_to_images(file_bytes: bytes, dpi: int = None) -> Tuple[List[Image.Image]
     return images, texts
 
 
-def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = None) -> List[Tuple[dict, dict]]:
+def generate_embeddings(
+    model, processor, images: List[Image.Image], device: str, batch_size: int = None
+) -> List[Tuple[dict, dict]]:
     """
     Generate ColQwen2.5 embeddings for images.
 
@@ -134,7 +236,7 @@ def generate_embeddings(model, processor, images: List[Image.Image], device: str
     all_embeddings = []
 
     for i in range(0, len(images), batch_size):
-        batch_images = images[i:i + batch_size]
+        batch_images = images[i : i + batch_size]
 
         with torch.no_grad():
             batch_inputs = processor.process_images(batch_images).to(device)
@@ -176,9 +278,7 @@ def feed_document(app: Vespa, doc: dict) -> Tuple[str, bool, str]:
     try:
         schema = get("vespa", "schema_name")
         response = app.feed_data_point(
-            schema=schema,
-            data_id=doc["id"],
-            fields=doc["fields"]
+            schema=schema, data_id=doc["id"], fields=doc["fields"]
         )
         if response.status_code == 200:
             return doc["id"], True, ""
@@ -198,7 +298,9 @@ def generate_doc_id(pdf_bytes: bytes, title: str) -> str:
     content_hash = hashlib.md5(pdf_bytes).hexdigest()[:hash_length]
     # Create safe title slug: alphanumeric only, max chars from config
     slug_max_length = get("ingestion", "doc_id_slug_max_length")
-    safe_title = re.sub(r'[^a-zA-Z0-9]', '_', title)[:slug_max_length].strip('_').lower()
+    safe_title = (
+        re.sub(r"[^a-zA-Z0-9]", "_", title)[:slug_max_length].strip("_").lower()
+    )
     if not safe_title:
         safe_title = "document"
     return f"{safe_title}_{content_hash}"
@@ -215,10 +317,11 @@ def ingest_pdf(
     description: str = "",
     tags: Optional[List[str]] = None,
     batch_size: int = None,
-    detect_drawing_regions: bool = False,
-    use_vlm_detection: bool = False,
+    detect_drawing_regions: bool = None,
+    use_vlm_detection: bool = None,
     vlm_api_key: Optional[str] = None,
-    detection_method: str = "auto",
+    detection_method: str = None,
+    ocr_enabled: bool = None,
     s3_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
@@ -226,6 +329,10 @@ def ingest_pdf(
 
     For large-format drawings, optionally detects sub-regions (elevations, details,
     tables) and embeds each region separately for better ColPali patch coverage.
+
+    Processing features enabled by default (configurable in ki55.toml [ingestion]):
+    - Region detection: Auto-split large drawings for better ColPali coverage
+    - OCR: Extract text from scanned pages via Tesseract when native text is sparse
 
     Args:
         file_bytes: Raw PDF bytes
@@ -238,10 +345,12 @@ def ingest_pdf(
         description: Optional description
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
-        detect_drawing_regions: Enable region detection for large drawings
-        use_vlm_detection: Use VLM for semantic region labeling (via OpenRouter/OpenAI/Ollama)
+        detect_drawing_regions: Enable region detection (default: from config)
+        use_vlm_detection: Use VLM for semantic region labeling (default: from config)
         vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
-        detection_method: Region detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        detection_method: Region detection strategy (default: from config)
+        ocr_enabled: Enable OCR for scanned documents (default: from config)
+        s3_key: Optional S3 key for original file reference
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -257,8 +366,22 @@ def ingest_pdf(
     # Resolve defaults from config
     if batch_size is None:
         batch_size = get("ingestion", "batch_size")
+    if detect_drawing_regions is None:
+        detect_drawing_regions = get("ingestion", "detect_regions")
+    if use_vlm_detection is None:
+        use_vlm_detection = get("ingestion", "use_vlm_labeling")
+    if detection_method is None:
+        detection_method = get("ingestion", "detection_method")
+    if ocr_enabled is None:
+        ocr_enabled = get("ingestion", "ocr_enabled")
+
     snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
     render_dpi = get("image", "dpi")
+
+    logger.info(
+        f"Ingesting PDF: {filename} (regions={detect_drawing_regions}, "
+        f"vlm={use_vlm_detection}, ocr={ocr_enabled})"
+    )
 
     # Step 1: Validate PDF
     is_valid, validation_msg = validate_pdf(file_bytes)
@@ -284,8 +407,11 @@ def ingest_pdf(
     try:
         for page_num in range(len(doc)):
             page = doc[page_num]
-            image, page_text = render_page(page, dpi=render_dpi)
+            image, raw_text = render_page(page, dpi=render_dpi)
             page_doc_id = f"{base_doc_id}_page_{page_num + 1}"
+
+            # Apply OCR if native text extraction is insufficient
+            page_text = extract_text_with_ocr(image, raw_text, ocr_enabled=ocr_enabled)
 
             # Determine if this page needs region detection
             if detect_drawing_regions and should_detect_regions(image):
@@ -313,16 +439,21 @@ def ingest_pdf(
                     continue
 
                 # Feed each region as a document
-                for region_idx, ((region_img, region_meta), (bin_emb, float_emb)) in enumerate(
-                    zip(region_results, region_embeddings)
-                ):
+                for region_idx, (
+                    (region_img, region_meta),
+                    (bin_emb, float_emb),
+                ) in enumerate(zip(region_results, region_embeddings)):
                     is_full_page = region_meta.region_type == "full_page"
                     if is_full_page:
                         doc_id = page_doc_id
                     else:
                         doc_id = f"{page_doc_id}_region_{region_idx}"
 
-                    snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
+                    snippet = (
+                        page_text[:snippet_ingest_length] + "..."
+                        if len(page_text) > snippet_ingest_length
+                        else page_text
+                    )
                     if not snippet:
                         snippet = f"Page {page_num + 1} of {filename}"
                     if not is_full_page and region_meta.label:
@@ -347,9 +478,13 @@ def ingest_pdf(
                             "queries": [],
                             "is_region": not is_full_page,
                             "parent_doc_id": page_doc_id if not is_full_page else "",
-                            "region_label": region_meta.label if not is_full_page else "",
+                            "region_label": region_meta.label
+                            if not is_full_page
+                            else "",
                             "region_type": region_meta.region_type,
-                            "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                            "region_bbox": json.dumps(region_meta.to_dict())
+                            if not is_full_page
+                            else "",
                             "s3_key": s3_key or "",
                         },
                     }
@@ -370,7 +505,11 @@ def ingest_pdf(
                     failed_docs.append((page_doc_id, f"Embedding error: {e}"))
                     continue
 
-                snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
+                snippet = (
+                    page_text[:snippet_ingest_length] + "..."
+                    if len(page_text) > snippet_ingest_length
+                    else page_text
+                )
                 if not snippet:
                     snippet = f"Page {page_num + 1} of {filename}"
 
@@ -411,7 +550,11 @@ def ingest_pdf(
     if docs_indexed == 0:
         return False, f"Failed to index any documents. Errors: {failed_docs}", 0
     elif failed_docs:
-        return True, f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.", docs_indexed
+        return (
+            True,
+            f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.",
+            docs_indexed,
+        )
     else:
         return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed
 
@@ -447,6 +590,11 @@ def ingest_image(
     description: str = "",
     tags: Optional[List[str]] = None,
     batch_size: int = None,
+    detect_drawing_regions: bool = None,
+    use_vlm_detection: bool = None,
+    vlm_api_key: Optional[str] = None,
+    detection_method: str = None,
+    ocr_enabled: bool = None,
     s3_key: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
@@ -454,6 +602,10 @@ def ingest_image(
 
     Opens the image with PIL, generates multi-vector embeddings via ColQwen2.5,
     and feeds the document to Vespa using the same pdf_page schema.
+
+    Processing features enabled by default (configurable in ki55.toml [ingestion]):
+    - Region detection: Auto-split large images for better ColPali coverage
+    - OCR: Extract text from images via Tesseract
 
     Args:
         file_bytes: Raw image bytes
@@ -466,6 +618,11 @@ def ingest_image(
         description: Optional description
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
+        detect_drawing_regions: Enable region detection (default: from config)
+        use_vlm_detection: Use VLM for semantic region labeling (default: from config)
+        vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
+        detection_method: Region detection strategy (default: from config)
+        ocr_enabled: Enable OCR for text extraction (default: from config)
         s3_key: Optional S3 key for original file reference
 
     Returns:
@@ -477,8 +634,21 @@ def ingest_image(
         tags = []
     if batch_size is None:
         batch_size = get("ingestion", "batch_size")
+    if detect_drawing_regions is None:
+        detect_drawing_regions = get("ingestion", "detect_regions")
+    if use_vlm_detection is None:
+        use_vlm_detection = get("ingestion", "use_vlm_labeling")
+    if detection_method is None:
+        detection_method = get("ingestion", "detection_method")
+    if ocr_enabled is None:
+        ocr_enabled = get("ingestion", "ocr_enabled")
 
     snippet_ingest_length = get("image", "truncation", "snippet_ingest_length")
+
+    logger.info(
+        f"Ingesting image: {filename} (regions={detect_drawing_regions}, "
+        f"vlm={use_vlm_detection}, ocr={ocr_enabled})"
+    )
 
     # Step 1: Validate image
     is_valid, validation_msg = validate_image(file_bytes)
@@ -495,15 +665,119 @@ def ingest_image(
     base_doc_id = generate_doc_id(file_bytes, title)
     doc_id = f"{base_doc_id}_page_1"
 
-    # Step 4: Generate embeddings
+    # Step 4: Extract text via OCR if enabled
+    image_text = ""
+    if ocr_enabled:
+        image_text = perform_ocr(image)
+        if image_text:
+            logger.debug(f"OCR extracted {len(image_text)} chars from image")
+
+    # Step 5: Check if region detection is needed
+    docs_indexed = 0
+    failed_docs = []
+
+    if detect_drawing_regions and should_detect_regions(image):
+        # Region detection for large images
+        region_results = detect_and_extract_regions(
+            image,
+            use_vlm=use_vlm_detection,
+            vlm_api_key=vlm_api_key,
+            detection_method=detection_method,
+            pdf_page=None,  # No PDF page for images
+        )
+        logger.info(
+            f"Image: detected {len(region_results)} regions "
+            f"(image size: {image.size[0]}x{image.size[1]})"
+        )
+
+        # Generate embeddings for all region images
+        region_images = [r[0] for r in region_results]
+        try:
+            region_embeddings = generate_embeddings(
+                model, processor, region_images, device, batch_size
+            )
+        except Exception as e:
+            return False, f"Embedding generation failed: {str(e)}", 0
+
+        # Feed each region as a document
+        for region_idx, ((region_img, region_meta), (bin_emb, float_emb)) in enumerate(
+            zip(region_results, region_embeddings)
+        ):
+            is_full_page = region_meta.region_type == "full_page"
+            if is_full_page:
+                region_doc_id = doc_id
+            else:
+                region_doc_id = f"{doc_id}_region_{region_idx}"
+
+            snippet = (
+                image_text[:snippet_ingest_length] + "..."
+                if len(image_text) > snippet_ingest_length
+                else image_text
+            )
+            if not snippet:
+                snippet = filename
+            if not is_full_page and region_meta.label:
+                snippet = f"[{region_meta.label}] {snippet}"
+
+            vespa_doc = {
+                "id": region_doc_id,
+                "fields": {
+                    "id": region_doc_id,
+                    "url": filename,
+                    "title": title,
+                    "page_number": 1,
+                    "text": image_text if is_full_page else "",
+                    "snippet": snippet,
+                    "description": description,
+                    "tags": tags,
+                    "blur_image": create_blur_image(region_img),
+                    "full_image": image_to_base64(region_img),
+                    "embedding": bin_emb,
+                    "embedding_float": float_emb,
+                    "questions": [],
+                    "queries": [],
+                    "is_region": not is_full_page,
+                    "parent_doc_id": doc_id if not is_full_page else "",
+                    "region_label": region_meta.label if not is_full_page else "",
+                    "region_type": region_meta.region_type,
+                    "region_bbox": json.dumps(region_meta.to_dict())
+                    if not is_full_page
+                    else "",
+                    "s3_key": s3_key or "",
+                },
+            }
+
+            _, success, error = feed_document(vespa_app, vespa_doc)
+            if success:
+                docs_indexed += 1
+            else:
+                failed_docs.append((region_doc_id, error))
+
+        if docs_indexed == 0:
+            return False, f"Failed to index any documents. Errors: {failed_docs}", 0
+        elif failed_docs:
+            return (
+                True,
+                f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.",
+                docs_indexed,
+            )
+        else:
+            return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed
+
+    # Standard single-image processing (no region detection)
     try:
         embeddings = generate_embeddings(model, processor, [image], device, batch_size)
         bin_emb, float_emb = embeddings[0]
     except Exception as e:
         return False, f"Embedding generation failed: {str(e)}", 0
 
-    # Step 5: Build and feed Vespa document
-    snippet = filename
+    snippet = (
+        image_text[:snippet_ingest_length] + "..."
+        if len(image_text) > snippet_ingest_length
+        else image_text
+    )
+    if not snippet:
+        snippet = filename
     if len(snippet) > snippet_ingest_length:
         snippet = snippet[:snippet_ingest_length] + "..."
 
@@ -514,7 +788,7 @@ def ingest_image(
             "url": filename,
             "title": title,
             "page_number": 1,
-            "text": "",
+            "text": image_text,
             "snippet": snippet,
             "description": description,
             "tags": tags,
