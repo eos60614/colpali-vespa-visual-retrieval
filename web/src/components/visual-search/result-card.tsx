@@ -1,9 +1,10 @@
 "use client";
 
 import Image from "next/image";
-import { Check, FileText, ExternalLink } from "lucide-react";
+import { Check, FileText, ExternalLink, Type } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import type { VisualSearchResult } from "@/types";
 
 interface VisualSearchResultCardProps {
@@ -54,8 +55,25 @@ export function VisualSearchResultCard({
         )}
       </div>
 
-      {/* Relevance badge */}
-      <div className="absolute top-2 right-2 z-10">
+      {/* Relevance badge and match type indicator */}
+      <div className="absolute top-2 right-2 z-10 flex items-center gap-1">
+        {result.matchType === "text" && (
+          <TooltipProvider delayDuration={300}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge
+                  variant="muted"
+                  className="text-[10px] bg-blue-500/20 text-blue-400 border-blue-500/30 px-1.5"
+                >
+                  <Type className="h-3 w-3" />
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="text-xs">
+                Text match - found via keyword search
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
         <Badge
           variant={normalizedScore > 80 ? "default" : "muted"}
           className={cn(

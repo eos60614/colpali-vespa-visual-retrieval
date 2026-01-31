@@ -171,6 +171,7 @@ async def api_search(request):
 
     Accepts JSON body: { query, ranking? }
     Returns JSON with search results including blur images and doc IDs.
+    For hybrid ranking, also returns text-matched documents with match_type field.
     """
     try:
         body = await request.json()
@@ -189,15 +190,28 @@ async def api_search(request):
     q_embs, idx_to_token = sim_map_generator.get_query_embeddings_and_token_map(query)
 
     start = time.perf_counter()
-    result = await vespa_app.get_result_from_query(
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        rerank=True,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=get("search", "final_hits"),
-    )
+
+    # For hybrid ranking, also fetch text-only matches
+    if ranking == "hybrid":
+        result = await vespa_app.get_hybrid_with_text_results(
+            query=query,
+            q_embs=q_embs,
+            idx_to_token=idx_to_token,
+            rerank=True,
+            rerank_hits=get("search", "rerank_hits"),
+            final_hits=get("search", "final_hits"),
+            text_hits=get("search", "text_hits"),
+        )
+    else:
+        result = await vespa_app.get_result_from_query(
+            query=query,
+            q_embs=q_embs,
+            ranking=ranking,
+            idx_to_token=idx_to_token,
+            rerank=True,
+            rerank_hits=get("search", "rerank_hits"),
+            final_hits=get("search", "final_hits"),
+        )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
     search_results = vespa_app.results_to_search_results(result, idx_to_token)
@@ -231,6 +245,7 @@ async def api_search(request):
             "relevance": relevance,
             "url": fields.get("url", ""),
             "has_original_pdf": bool(fields.get("s3_key", "")),
+            "match_type": sr.get("match_type", "hybrid"),
         })
 
     return JSONResponse({
@@ -249,6 +264,7 @@ async def api_visual_search(request):
 
     Accepts JSON body: { query, ranking?, limit? }
     Returns JSON with search results including blur images, doc IDs, and token map.
+    For hybrid ranking, also returns text-matched documents with match_type field.
     """
     try:
         body = await request.json()
@@ -268,15 +284,28 @@ async def api_visual_search(request):
     q_embs, idx_to_token = sim_map_generator.get_query_embeddings_and_token_map(query)
 
     start = time.perf_counter()
-    result = await vespa_app.get_result_from_query(
-        query=query,
-        q_embs=q_embs,
-        ranking=ranking,
-        idx_to_token=idx_to_token,
-        rerank=True,
-        rerank_hits=get("search", "rerank_hits"),
-        final_hits=min(limit, get("search", "final_hits")),
-    )
+
+    # For hybrid ranking, also fetch text-only matches
+    if ranking == "hybrid":
+        result = await vespa_app.get_hybrid_with_text_results(
+            query=query,
+            q_embs=q_embs,
+            idx_to_token=idx_to_token,
+            rerank=True,
+            rerank_hits=get("search", "rerank_hits"),
+            final_hits=min(limit, get("search", "final_hits")),
+            text_hits=get("search", "text_hits"),
+        )
+    else:
+        result = await vespa_app.get_result_from_query(
+            query=query,
+            q_embs=q_embs,
+            ranking=ranking,
+            idx_to_token=idx_to_token,
+            rerank=True,
+            rerank_hits=get("search", "rerank_hits"),
+            final_hits=min(limit, get("search", "final_hits")),
+        )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
     search_results = vespa_app.results_to_search_results(result, idx_to_token)
@@ -303,6 +332,7 @@ async def api_visual_search(request):
             "page_number": r["fields"].get("page_number", 0) + 1,
             "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
             "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+            "match_type": r.get("match_type", "hybrid"),
         }
         for r in search_results
     ]
@@ -328,6 +358,7 @@ async def api_visual_search(request):
             "relevance": relevance,
             "url": fields.get("url", ""),
             "has_original_pdf": bool(fields.get("s3_key", "")),
+            "match_type": sr.get("match_type", "hybrid"),
         })
 
     return JSONResponse({

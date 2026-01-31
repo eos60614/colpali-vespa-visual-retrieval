@@ -96,6 +96,7 @@ requires_flash_attention = false
 rerank_hits = 20       # Number of candidates to fetch for MaxSim reranking
 final_hits = 5         # Number of search results returned to frontend
 num_images = 5         # Number of document images sent to LLM for synthesis
+text_hits = 3          # Additional text-matched documents to show in hybrid search
 
 [image]
 jpeg_quality = 85

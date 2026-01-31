@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { correlationHeaders, getLogger } from "@/lib/logger";
-import type { VisualSearchResult, TokenInfo, SynthesisState } from "@/types";
+import type { VisualSearchResult, TokenInfo, SynthesisState, MatchType } from "@/types";
 
 const logger = getLogger("use-visual-search");
 
@@ -94,6 +94,7 @@ export function useVisualSearch(): UseVisualSearchReturn {
         relevance: number;
         url?: string;
         has_original_pdf: boolean;
+        match_type?: MatchType;
       }) => ({
         id: r.id,
         title: r.title,
@@ -105,6 +106,7 @@ export function useVisualSearch(): UseVisualSearchReturn {
         url: r.url,
         hasOriginalPdf: r.has_original_pdf,
         selected: false,
+        matchType: r.match_type,
       }));
 
       const transformedTokenMap: TokenInfo[] = (data.token_map || []).map((t: { token: string; token_idx: number }) => ({

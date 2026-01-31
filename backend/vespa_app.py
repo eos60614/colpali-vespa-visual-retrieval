@@ -316,6 +316,112 @@ class VespaQueryClient:
             self.logger.debug(single_result["fields"].keys())
         return result
 
+    async def get_hybrid_with_text_results(
+        self,
+        query: str,
+        q_embs: torch.Tensor,
+        idx_to_token: dict,
+        rerank: bool = False,
+        rerank_hits: int = 20,
+        final_hits: int = 3,
+        text_hits: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Get hybrid results plus additional BM25 text-only matches.
+
+        This runs the hybrid query (ColPali + BM25 combined scoring) and also
+        a separate BM25-only query to find documents that match well on text
+        but may not have ranked highly visually. Results are deduplicated.
+
+        Args:
+            query (str): The query text.
+            q_embs (torch.Tensor): Query embeddings.
+            idx_to_token (dict): Index to token mapping.
+            rerank (bool): Whether to perform application-level reranking.
+            rerank_hits (int): Number of candidates to fetch for reranking.
+            final_hits (int): Number of final hybrid results to return.
+            text_hits (int): Number of additional text-only results to include.
+
+        Returns:
+            Dict[str, Any]: Combined results with 'match_type' field:
+                - "hybrid": results from combined ColPali+BM25 ranking
+                - "text": results that matched on text but weren't in top hybrid results
+        """
+        from .rerank import rerank_results
+
+        # Remove stopwords from the query
+        filtered_query = backend.stopwords.filter(query)
+
+        # Run hybrid and BM25 queries in parallel
+        hybrid_task = self.query_vespa_colpali(
+            query=filtered_query,
+            ranking="hybrid",
+            q_emb=q_embs,
+            include_embedding=rerank,
+            hits=rerank_hits if rerank else final_hits,
+        )
+        bm25_task = self.query_vespa_bm25(
+            query=filtered_query,
+            q_emb=q_embs,
+            hits=text_hits + final_hits,  # Get extra to account for overlap
+        )
+
+        hybrid_result, bm25_result = await asyncio.gather(hybrid_task, bm25_task)
+
+        # Process hybrid results
+        if "root" not in hybrid_result or "children" not in hybrid_result["root"]:
+            hybrid_result["root"] = {"children": []}
+
+        hybrid_children = hybrid_result["root"]["children"]
+
+        # Perform reranking if requested
+        if rerank and hybrid_children:
+            self.logger.info(f"Reranking {len(hybrid_children)} hybrid candidates")
+            reranked = rerank_results(q_embs, hybrid_children)
+            hybrid_children = reranked[:final_hits]
+            # Remove embeddings
+            for child in hybrid_children:
+                fields = child.get("fields", {})
+                if "embedding_float" in fields:
+                    del fields["embedding_float"]
+                if "embedding" in fields:
+                    del fields["embedding"]
+
+        # Track hybrid doc IDs
+        hybrid_doc_ids = {
+            child.get("fields", {}).get("id") for child in hybrid_children
+        }
+
+        # Mark hybrid results
+        for child in hybrid_children:
+            child["match_type"] = "hybrid"
+
+        # Process BM25 results - find text matches not in hybrid results
+        text_only_children = []
+        if "root" in bm25_result and "children" in bm25_result["root"]:
+            for child in bm25_result["root"]["children"]:
+                doc_id = child.get("fields", {}).get("id")
+                if doc_id and doc_id not in hybrid_doc_ids:
+                    child["match_type"] = "text"
+                    text_only_children.append(child)
+                    if len(text_only_children) >= text_hits:
+                        break
+
+        self.logger.info(
+            f"Hybrid search: {len(hybrid_children)} hybrid results, "
+            f"{len(text_only_children)} additional text-only results"
+        )
+
+        # Combine results
+        combined_result = {
+            "root": {
+                "children": hybrid_children + text_only_children,
+                "fields": hybrid_result.get("root", {}).get("fields", {}),
+            }
+        }
+
+        return combined_result
+
     def get_sim_maps_from_query(
         self, query: str, q_embs: torch.Tensor, ranking: str, idx_to_token: dict
     ):

@@ -165,6 +165,13 @@ export interface RecentDocument {
 // Visual Search Types
 // ============================================================
 
+export type MatchType = "hybrid" | "text";
+
+export const MATCH_TYPE_LABELS: Record<MatchType, string> = {
+  hybrid: "Visual + Text",
+  text: "Text Match",
+};
+
 export interface VisualSearchResult {
   id: string;
   title: string;
@@ -176,6 +183,7 @@ export interface VisualSearchResult {
   url?: string;
   hasOriginalPdf: boolean;
   selected?: boolean;
+  matchType?: MatchType;
 }
 
 export interface VisualSearchResponse {
