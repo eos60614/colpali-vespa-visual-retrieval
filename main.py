@@ -3,6 +3,7 @@ Backend API server for the visual document retrieval system.
 
 Provides JSON REST APIs for the Next.js frontend.
 """
+
 import asyncio
 import base64
 import io
@@ -18,19 +19,39 @@ from fastcore.parallel import threaded
 from PIL import Image
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
-from starlette.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from starlette.responses import (
+    FileResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from starlette.routing import Route
 from vespa.application import Vespa
 
 from backend.config import get
 from backend.logging_config import configure_logging, get_logger
 from backend.middleware import CorrelationIdMiddleware, ErrorBoundaryMiddleware
-from backend.llm_config import resolve_llm_config, get_chat_model, is_remote_api, build_auth_headers
+from backend.llm_config import (
+    resolve_llm_config,
+    get_chat_model,
+    is_remote_api,
+    build_auth_headers,
+)
 from backend.colpali import SimMapGenerator
 from backend.vespa_app import VespaQueryClient
-from backend.ingest import ingest_pdf, validate_pdf
+from backend.ingest import (
+    ingest_pdf,
+    ingest_image,
+    validate_pdf,
+    validate_image,
+    PROCESSABLE_EXTENSIONS,
+)
 from backend.s3 import generate_presigned_url
-from backend.llm_rerank import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
+from backend.llm_rerank import (
+    llm_rerank_results,
+    is_llm_rerank_enabled,
+    get_llm_rerank_candidates,
+)
 
 # Initialize centralized logging
 LOG_LEVEL = get("app", "log_level").upper()
@@ -71,6 +92,7 @@ def generate_query_id(query: str, ranking_value: str) -> int:
 # Startup/shutdown handlers
 # =============================================================================
 
+
 async def startup():
     """Initialize the ColPali model and start Vespa keepalive task."""
     global sim_map_generator
@@ -90,6 +112,7 @@ async def poll_vespa_keepalive():
 # =============================================================================
 # Background tasks
 # =============================================================================
+
 
 @threaded
 def get_and_store_sim_maps(
@@ -113,7 +136,9 @@ def get_and_store_sim_maps(
     ):
         time.sleep(poll_sleep)
     if not all([os.path.exists(img_path) for img_path in img_paths]):
-        logger.warning(f"Images not ready in {max_wait} seconds for query_id: {query_id}")
+        logger.warning(
+            f"Images not ready in {max_wait} seconds for query_id: {query_id}"
+        )
         return False
     sim_map_gen = sim_map_generator.gen_similarity_maps(
         query=query,
@@ -143,12 +168,15 @@ def _download_images_bg(doc_ids):
                     f.write(base64.b64decode(image_data))
                 logger.debug(f"Background download: saved {doc_id}")
             except Exception as e:
-                logger.error(f"Background image download failed for {doc_id}: {e}", exc_info=True)
+                logger.error(
+                    f"Background image download failed for {doc_id}: {e}", exc_info=True
+                )
 
 
 # =============================================================================
 # API Route Handlers
 # =============================================================================
+
 
 async def serve_static(request):
     """Serve static files."""
@@ -169,7 +197,8 @@ async def api_suggestions(request):
 async def api_search(request):
     """JSON search endpoint for the Next.js frontend.
 
-    Accepts JSON body: { query, ranking? }
+    Accepts JSON body: { query, ranking?, filters? }
+    filters can include: { source, source_id, metadata: {key: value}, tags: [...] }
     Returns JSON with search results including blur images and doc IDs.
     """
     try:
@@ -179,6 +208,7 @@ async def api_search(request):
 
     query = body.get("query", "").strip()
     ranking = body.get("ranking", "hybrid")
+    filters = body.get("filters", {})
 
     if not query:
         return JSONResponse({"error": "Query is required"}, status_code=400)
@@ -197,6 +227,7 @@ async def api_search(request):
         rerank=True,
         rerank_hits=get("search", "rerank_hits"),
         final_hits=get("search", "final_hits"),
+        filters=filters,
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
@@ -221,33 +252,40 @@ async def api_search(request):
     for sr in search_results:
         fields = sr.get("fields", {})
         relevance = sr.get("relevance", 0)
-        results_json.append({
-            "id": fields.get("id", ""),
-            "title": fields.get("title", ""),
-            "page_number": fields.get("page_number", 0),
-            "snippet": fields.get("snippet", ""),
-            "text": fields.get("text", ""),
-            "blur_image": fields.get("blur_image", ""),
-            "relevance": relevance,
-            "url": fields.get("url", ""),
-            "has_original_pdf": bool(fields.get("s3_key", "")),
-        })
+        results_json.append(
+            {
+                "id": fields.get("id", ""),
+                "title": fields.get("title", ""),
+                "page_number": fields.get("page_number", 0),
+                "snippet": fields.get("snippet", ""),
+                "text": fields.get("text", ""),
+                "blur_image": fields.get("blur_image", ""),
+                "relevance": relevance,
+                "url": fields.get("url", ""),
+                "has_original_pdf": bool(fields.get("s3_key", "")),
+            }
+        )
 
-    return JSONResponse({
-        "results": results_json,
-        "query": query,
-        "query_id": str(query_id),
-        "doc_ids": doc_ids,
-        "ranking": ranking,
-        "duration_ms": duration_ms,
-        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
-    })
+    return JSONResponse(
+        {
+            "results": results_json,
+            "query": query,
+            "query_id": str(query_id),
+            "doc_ids": doc_ids,
+            "ranking": ranking,
+            "duration_ms": duration_ms,
+            "total_count": result.get("root", {})
+            .get("fields", {})
+            .get("totalCount", 0),
+        }
+    )
 
 
 async def api_visual_search(request):
     """JSON endpoint for visual search results.
 
-    Accepts JSON body: { query, ranking?, limit? }
+    Accepts JSON body: { query, ranking?, limit?, filters? }
+    filters can include: { source, source_id, metadata: {key: value}, tags: [...] }
     Returns JSON with search results including blur images, doc IDs, and token map.
     """
     try:
@@ -258,6 +296,7 @@ async def api_visual_search(request):
     query = body.get("query", "").strip()
     ranking = body.get("ranking", "hybrid")
     limit = body.get("limit", 20)
+    filters = body.get("filters", {})
 
     if not query:
         return JSONResponse({"error": "Query is required"}, status_code=400)
@@ -276,6 +315,7 @@ async def api_visual_search(request):
         rerank=True,
         rerank_hits=get("search", "rerank_hits"),
         final_hits=min(limit, get("search", "final_hits")),
+        filters=filters,
     )
     duration_ms = round((time.perf_counter() - start) * 1000)
 
@@ -301,8 +341,12 @@ async def api_visual_search(request):
             "doc_id": r["fields"].get("id", ""),
             "title": r["fields"].get("title", "Unknown"),
             "page_number": r["fields"].get("page_number", 0) + 1,
-            "snippet": (r["fields"].get("snippet", "") or "")[:get("image", "truncation", "snippet_length")],
-            "text": (r["fields"].get("text", "") or "")[:get("image", "truncation", "text_length")],
+            "snippet": (r["fields"].get("snippet", "") or "")[
+                : get("image", "truncation", "snippet_length")
+            ],
+            "text": (r["fields"].get("text", "") or "")[
+                : get("image", "truncation", "text_length")
+            ],
         }
         for r in search_results
     ]
@@ -318,28 +362,34 @@ async def api_visual_search(request):
     for sr in search_results:
         fields = sr.get("fields", {})
         relevance = sr.get("relevance", 0)
-        results_json.append({
-            "id": fields.get("id", ""),
-            "title": fields.get("title", ""),
-            "page_number": fields.get("page_number", 0),
-            "snippet": fields.get("snippet", ""),
-            "text": fields.get("text", ""),
-            "blur_image": fields.get("blur_image", ""),
-            "relevance": relevance,
-            "url": fields.get("url", ""),
-            "has_original_pdf": bool(fields.get("s3_key", "")),
-        })
+        results_json.append(
+            {
+                "id": fields.get("id", ""),
+                "title": fields.get("title", ""),
+                "page_number": fields.get("page_number", 0),
+                "snippet": fields.get("snippet", ""),
+                "text": fields.get("text", ""),
+                "blur_image": fields.get("blur_image", ""),
+                "relevance": relevance,
+                "url": fields.get("url", ""),
+                "has_original_pdf": bool(fields.get("s3_key", "")),
+            }
+        )
 
-    return JSONResponse({
-        "results": results_json,
-        "query": query,
-        "query_id": str(query_id),
-        "doc_ids": doc_ids,
-        "ranking": ranking,
-        "duration_ms": duration_ms,
-        "total_count": result.get("root", {}).get("fields", {}).get("totalCount", 0),
-        "token_map": token_map,
-    })
+    return JSONResponse(
+        {
+            "results": results_json,
+            "query": query,
+            "query_id": str(query_id),
+            "doc_ids": doc_ids,
+            "ranking": ranking,
+            "duration_ms": duration_ms,
+            "total_count": result.get("root", {})
+            .get("fields", {})
+            .get("totalCount", 0),
+            "token_map": token_map,
+        }
+    )
 
 
 async def api_full_image(request):
@@ -374,15 +424,19 @@ async def api_sim_map(request):
 
     sim_map_path = SIM_MAP_DIR / f"{query_id}_{idx}_{token_idx}.png"
     if not os.path.exists(sim_map_path):
-        logger.debug(f"Sim map not ready for query_id: {query_id}, idx: {idx}, token_idx: {token_idx}")
+        logger.debug(
+            f"Sim map not ready for query_id: {query_id}, idx: {idx}, token_idx: {token_idx}"
+        )
         return JSONResponse({"ready": False})
     else:
         with open(sim_map_path, "rb") as f:
             image_data = base64.b64encode(f.read()).decode("utf-8")
-        return JSONResponse({
-            "ready": True,
-            "image": f"data:image/png;base64,{image_data}",
-        })
+        return JSONResponse(
+            {
+                "ready": True,
+                "image": f"data:image/png;base64,{image_data}",
+            }
+        )
 
 
 async def api_upload(request):
@@ -400,31 +454,42 @@ async def api_upload(request):
     use_vlm = form.get("use_vlm", "")
 
     # Check if file was provided
-    if pdf_file is None or not hasattr(pdf_file, 'filename') or pdf_file.filename == "":
+    if pdf_file is None or not hasattr(pdf_file, "filename") or pdf_file.filename == "":
         logger.warning("Upload attempted without file")
-        return JSONResponse({"success": False, "error": "Please select a PDF file"}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": "Please select a PDF file"}, status_code=400
+        )
 
     # Read file content
     try:
         file_bytes = await pdf_file.read()
     except Exception as e:
         logger.error(f"Error reading uploaded file: {e}", exc_info=True)
-        return JSONResponse({"success": False, "error": "Error reading uploaded file"}, status_code=500)
+        return JSONResponse(
+            {"success": False, "error": "Error reading uploaded file"}, status_code=500
+        )
 
     # Validate file size
     if len(file_bytes) > MAX_FILE_SIZE:
         logger.warning(f"File too large: {len(file_bytes)} bytes")
-        return JSONResponse({"success": False, "error": "File exceeds 250MB size limit"}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": "File exceeds 250MB size limit"},
+            status_code=400,
+        )
 
     # Validate file is a PDF
     if not pdf_file.filename.lower().endswith(".pdf"):
-        return JSONResponse({"success": False, "error": "Only PDF files are accepted"}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": "Only PDF files are accepted"}, status_code=400
+        )
 
     # Validate PDF integrity
     is_valid, validation_msg = validate_pdf(file_bytes)
     if not is_valid:
         logger.warning(f"PDF validation failed: {validation_msg}")
-        return JSONResponse({"success": False, "error": validation_msg}, status_code=400)
+        return JSONResponse(
+            {"success": False, "error": validation_msg}, status_code=400
+        )
 
     # Parse tags
     tag_list = []
@@ -432,21 +497,42 @@ async def api_upload(request):
         tag_list = [t.strip() for t in tags.split(",") if t.strip()]
         max_tags = get("app", "validation", "max_tags")
         if len(tag_list) > max_tags:
-            return JSONResponse({"success": False, "error": f"Maximum {max_tags} tags allowed"}, status_code=400)
+            return JSONResponse(
+                {"success": False, "error": f"Maximum {max_tags} tags allowed"},
+                status_code=400,
+            )
         max_tag_length = get("app", "validation", "max_tag_length")
         for tag in tag_list:
             if len(tag) > max_tag_length:
-                return JSONResponse({"success": False, "error": f"Each tag must be {max_tag_length} characters or less"}, status_code=400)
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": f"Each tag must be {max_tag_length} characters or less",
+                    },
+                    status_code=400,
+                )
 
     # Validate title length
     max_title_length = get("app", "validation", "max_title_length")
     if title and len(title) > max_title_length:
-        return JSONResponse({"success": False, "error": f"Title must be {max_title_length} characters or less"}, status_code=400)
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Title must be {max_title_length} characters or less",
+            },
+            status_code=400,
+        )
 
     # Validate description length
     max_desc_length = get("app", "validation", "max_description_length")
     if description and len(description) > max_desc_length:
-        return JSONResponse({"success": False, "error": f"Description must be {max_desc_length} characters or less"}, status_code=400)
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Description must be {max_desc_length} characters or less",
+            },
+            status_code=400,
+        )
 
     # Get the ColPali model
     model = sim_map_generator.model
@@ -457,7 +543,11 @@ async def api_upload(request):
     vespa = vespa_app.app
 
     # Process the PDF
-    enable_regions = detect_regions.lower() in ("on", "true", "1", "yes") if detect_regions else False
+    enable_regions = (
+        detect_regions.lower() in ("on", "true", "1", "yes")
+        if detect_regions
+        else False
+    )
     enable_vlm = use_vlm.lower() in ("on", "true", "1", "yes") if use_vlm else False
 
     try:
@@ -476,19 +566,271 @@ async def api_upload(request):
         )
     except Exception as e:
         logger.error(f"Error processing PDF: {e}", exc_info=True)
-        return JSONResponse({"success": False, "error": "Error processing document. Please try again."}, status_code=500)
+        return JSONResponse(
+            {"success": False, "error": "Error processing document. Please try again."},
+            status_code=500,
+        )
 
     if success:
-        final_title = title.strip() if title and title.strip() else Path(pdf_file.filename).stem
+        final_title = (
+            title.strip() if title and title.strip() else Path(pdf_file.filename).stem
+        )
         logger.info(f"Successfully uploaded: {final_title} ({pages_indexed} pages)")
-        return JSONResponse({
-            "success": True,
-            "title": final_title,
-            "pages_indexed": pages_indexed,
-            "message": message,
-        })
+        return JSONResponse(
+            {
+                "success": True,
+                "title": final_title,
+                "pages_indexed": pages_indexed,
+                "message": message,
+            }
+        )
     else:
         logger.error(f"Upload failed: {message}")
+        return JSONResponse({"success": False, "error": message}, status_code=400)
+
+
+async def api_ingest(request):
+    """JSON endpoint for external connector file ingestion.
+
+    Accepts JSON body with file content and flexible metadata:
+    {
+        "file": {
+            "content": "base64-encoded file content",
+            "filename": "document.pdf",
+            "url": "https://example.com/file.pdf"  # Alternative to content
+        },
+        "title": "Document Title",
+        "description": "Optional description",
+        "tags": ["tag1", "tag2"],
+        "source": "connector-name",
+        "source_id": "external-system-id",
+        "metadata": {
+            "project_id": "12345",
+            "department": "Engineering",
+            "custom_field": "any value"
+        },
+        "options": {
+            "detect_regions": false,
+            "use_vlm": false
+        }
+    }
+
+    Returns JSON: {"success": true, "doc_id": "...", "pages_indexed": N}
+    On error: {"success": false, "error": "message"}
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"success": False, "error": "Invalid JSON body"}, status_code=400
+        )
+
+    # Extract file information
+    file_info = body.get("file", {})
+    file_content = file_info.get("content")
+    file_url = file_info.get("url")
+    filename = file_info.get("filename", "")
+
+    if not file_content and not file_url:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Either file.content (base64) or file.url is required",
+            },
+            status_code=400,
+        )
+
+    if not filename:
+        return JSONResponse(
+            {"success": False, "error": "file.filename is required"}, status_code=400
+        )
+
+    # Get file bytes
+    file_bytes = None
+    if file_content:
+        try:
+            file_bytes = base64.b64decode(file_content)
+        except Exception as e:
+            logger.error(f"Error decoding base64 content: {e}")
+            return JSONResponse(
+                {"success": False, "error": "Invalid base64 file content"},
+                status_code=400,
+            )
+    elif file_url:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.get(file_url)
+                response.raise_for_status()
+                file_bytes = response.content
+        except Exception as e:
+            logger.error(f"Error fetching file from URL: {e}")
+            return JSONResponse(
+                {"success": False, "error": f"Failed to fetch file from URL: {str(e)}"},
+                status_code=400,
+            )
+
+    # Validate file size
+    if len(file_bytes) > MAX_FILE_SIZE:
+        logger.warning(f"File too large: {len(file_bytes)} bytes")
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"File exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB size limit",
+            },
+            status_code=400,
+        )
+
+    # Determine file type from extension
+    file_ext = Path(filename).suffix.lower()
+    if file_ext not in PROCESSABLE_EXTENSIONS:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Unsupported file type: {file_ext}. Supported: {', '.join(PROCESSABLE_EXTENSIONS)}",
+            },
+            status_code=400,
+        )
+
+    is_pdf = file_ext == ".pdf"
+
+    # Validate file integrity
+    if is_pdf:
+        is_valid, validation_msg = validate_pdf(file_bytes)
+    else:
+        is_valid, validation_msg = validate_image(file_bytes)
+
+    if not is_valid:
+        logger.warning(f"File validation failed: {validation_msg}")
+        return JSONResponse(
+            {"success": False, "error": validation_msg}, status_code=400
+        )
+
+    # Extract metadata fields
+    title = body.get("title", "")
+    description = body.get("description", "")
+    tags = body.get("tags", [])
+    source = body.get("source", "")
+    source_id = body.get("source_id", "")
+    metadata = body.get("metadata", {})
+    options = body.get("options", {})
+
+    # Validate tags
+    if not isinstance(tags, list):
+        return JSONResponse(
+            {"success": False, "error": "tags must be an array"}, status_code=400
+        )
+    max_tags = get("app", "validation", "max_tags")
+    if len(tags) > max_tags:
+        return JSONResponse(
+            {"success": False, "error": f"Maximum {max_tags} tags allowed"},
+            status_code=400,
+        )
+    max_tag_length = get("app", "validation", "max_tag_length")
+    for tag in tags:
+        if not isinstance(tag, str) or len(tag) > max_tag_length:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "error": f"Each tag must be a string of {max_tag_length} characters or less",
+                },
+                status_code=400,
+            )
+
+    # Validate title length
+    max_title_length = get("app", "validation", "max_title_length")
+    if title and len(title) > max_title_length:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Title must be {max_title_length} characters or less",
+            },
+            status_code=400,
+        )
+
+    # Validate description length
+    max_desc_length = get("app", "validation", "max_description_length")
+    if description and len(description) > max_desc_length:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": f"Description must be {max_desc_length} characters or less",
+            },
+            status_code=400,
+        )
+
+    # Validate metadata is a dict
+    if not isinstance(metadata, dict):
+        return JSONResponse(
+            {"success": False, "error": "metadata must be an object"}, status_code=400
+        )
+
+    # Get model components
+    model = sim_map_generator.model
+    processor = sim_map_generator.processor
+    device = sim_map_generator.device
+    vespa = vespa_app.app
+
+    # Parse options
+    detect_regions = options.get("detect_regions", False)
+    use_vlm = options.get("use_vlm", False)
+
+    try:
+        if is_pdf:
+            success, message, pages_indexed = ingest_pdf(
+                file_bytes=file_bytes,
+                filename=filename,
+                vespa_app=vespa,
+                model=model,
+                processor=processor,
+                device=device,
+                title=title.strip() if title and title.strip() else None,
+                description=description if description else "",
+                tags=tags,
+                detect_drawing_regions=detect_regions,
+                use_vlm_detection=use_vlm,
+                source=source if source else None,
+                source_id=source_id if source_id else None,
+                metadata=metadata,
+            )
+        else:
+            success, message, pages_indexed = ingest_image(
+                file_bytes=file_bytes,
+                filename=filename,
+                vespa_app=vespa,
+                model=model,
+                processor=processor,
+                device=device,
+                title=title.strip() if title and title.strip() else None,
+                description=description if description else "",
+                tags=tags,
+                source=source if source else None,
+                source_id=source_id if source_id else None,
+                metadata=metadata,
+            )
+    except Exception as e:
+        logger.error(f"Error processing file: {e}", exc_info=True)
+        return JSONResponse(
+            {"success": False, "error": "Error processing document. Please try again."},
+            status_code=500,
+        )
+
+    if success:
+        final_title = title.strip() if title and title.strip() else Path(filename).stem
+        logger.info(
+            f"Successfully ingested via connector: {final_title} ({pages_indexed} pages, source={source})"
+        )
+        return JSONResponse(
+            {
+                "success": True,
+                "title": final_title,
+                "pages_indexed": pages_indexed,
+                "message": message,
+                "source": source,
+                "source_id": source_id,
+            }
+        )
+    else:
+        logger.error(f"Ingest failed: {message}")
         return JSONResponse({"success": False, "error": message}, status_code=400)
 
 
@@ -518,16 +860,25 @@ async def api_download_url(request):
 
             s3_key = children[0].get("fields", {}).get("s3_key", "")
             if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+                return JSONResponse(
+                    {"error": "No original PDF available for this document"},
+                    status_code=404,
+                )
     except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        logger.error(
+            f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True
+        )
         return JSONResponse({"error": "Failed to look up document"}, status_code=500)
 
     try:
         presigned_url = generate_presigned_url(s3_key)
     except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+        logger.error(
+            f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True
+        )
+        return JSONResponse(
+            {"error": "Failed to generate download link"}, status_code=500
+        )
 
     return JSONResponse({"download_url": presigned_url})
 
@@ -559,16 +910,25 @@ async def api_download_pdf(request):
 
             s3_key = children[0].get("fields", {}).get("s3_key", "")
             if not s3_key:
-                return JSONResponse({"error": "No original PDF available for this document"}, status_code=404)
+                return JSONResponse(
+                    {"error": "No original PDF available for this document"},
+                    status_code=404,
+                )
     except Exception as e:
-        logger.error(f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True)
+        logger.error(
+            f"Error querying Vespa for s3_key (doc_id={doc_id}): {e}", exc_info=True
+        )
         return JSONResponse({"error": "Failed to look up document"}, status_code=500)
 
     try:
         presigned_url = generate_presigned_url(s3_key)
     except Exception as e:
-        logger.error(f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True)
-        return JSONResponse({"error": "Failed to generate download link"}, status_code=500)
+        logger.error(
+            f"Error generating presigned URL for s3_key={s3_key}: {e}", exc_info=True
+        )
+        return JSONResponse(
+            {"error": "Failed to generate download link"}, status_code=500
+        )
 
     return RedirectResponse(presigned_url)
 
@@ -576,6 +936,7 @@ async def api_download_pdf(request):
 # =============================================================================
 # SSE Streaming Endpoints
 # =============================================================================
+
 
 async def message_generator(query_id: str, query: str, doc_ids: list):
     """Generator function to yield SSE messages for chat response."""
@@ -592,10 +953,14 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
         for idx in range(min(num_images, len(doc_ids))):
             image_filename = IMG_DIR / f"{doc_ids[idx]}.jpg"
             if not os.path.exists(image_filename):
-                logger.debug(f"Message generator: Full image not ready for query_id: {query_id}, idx: {idx}")
+                logger.debug(
+                    f"Message generator: Full image not ready for query_id: {query_id}, idx: {idx}"
+                )
                 continue
             else:
-                logger.debug(f"Message generator: image ready for query_id: {query_id}, idx: {idx}")
+                logger.debug(
+                    f"Message generator: image ready for query_id: {query_id}, idx: {idx}"
+                )
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
             await asyncio.sleep(get("image", "poll_sleep_seconds"))
@@ -618,35 +983,50 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
     # Build document context from cached metadata
     doc_metadata = _query_result_metadata.get(query_id, [])
     context_lines = []
-    for i, meta in enumerate(doc_metadata[:len(images)]):
-        context_lines.append(f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}")
+    for i, meta in enumerate(doc_metadata[: len(images)]):
+        context_lines.append(
+            f'- Document {i + 1}: "{meta["title"]}" — Page {meta["page_number"]}'
+        )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
-    doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
+            context_lines.append(
+                f"  Text extract: {meta['text'][: get('image', 'truncation', 'snippet_length')]}"
+            )
+    doc_context = (
+        "\n".join(context_lines) if context_lines else "No metadata available."
+    )
 
     content_parts = []
     for i, img in enumerate(images):
         meta_label = ""
         if i < len(doc_metadata):
             m = doc_metadata[i]
-            meta_label = f"[Document {i+1}: \"{m['title']}\", Page {m['page_number']}]"
+            meta_label = f'[Document {i + 1}: "{m["title"]}", Page {m["page_number"]}]'
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        content_parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            }
+        )
 
-    content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
+    content_parts.append(
+        {
+            "type": "text",
+            "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}",
+        }
+    )
 
     headers = build_auth_headers(LLM_API_KEY)
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+        async with httpx.AsyncClient(
+            timeout=get("llm", "http_timeout_seconds")
+        ) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -664,7 +1044,7 @@ async def message_generator(query_id: str, query: str, doc_ids: list):
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
-                    data = line[len("data: "):]
+                    data = line[len("data: ") :]
                     if data.strip() == "[DONE]":
                         break
                     try:
@@ -701,20 +1081,21 @@ async def synthesize_generator(query: str, doc_ids: list, query_id: str):
     max_wait = get("image", "max_wait_chat_seconds")
     start_time = time.time()
 
-    while (
-        len(images) < num_images
-        and time.time() - start_time < max_wait
-    ):
+    while len(images) < num_images and time.time() - start_time < max_wait:
         images = []
         for idx in range(num_images):
             if idx >= len(doc_ids):
                 break
             image_filename = IMG_DIR / f"{doc_ids[idx]}.jpg"
             if not os.path.exists(image_filename):
-                logger.debug(f"Synthesize: Full image not ready for query_id: {query_id}, idx: {idx}")
+                logger.debug(
+                    f"Synthesize: Full image not ready for query_id: {query_id}, idx: {idx}"
+                )
                 continue
             else:
-                logger.debug(f"Synthesize: image ready for query_id: {query_id}, idx: {idx}")
+                logger.debug(
+                    f"Synthesize: image ready for query_id: {query_id}, idx: {idx}"
+                )
                 images.append(Image.open(image_filename))
         if len(images) < num_images:
             await asyncio.sleep(get("image", "poll_sleep_seconds"))
@@ -736,35 +1117,50 @@ async def synthesize_generator(query: str, doc_ids: list, query_id: str):
 
     doc_metadata = _query_result_metadata.get(str(query_id), [])
     context_lines = []
-    for i, meta in enumerate(doc_metadata[:len(images)]):
-        context_lines.append(f"- Document {i+1}: \"{meta['title']}\" — Page {meta['page_number']}")
+    for i, meta in enumerate(doc_metadata[: len(images)]):
+        context_lines.append(
+            f'- Document {i + 1}: "{meta["title"]}" — Page {meta["page_number"]}'
+        )
         if meta.get("text"):
-            context_lines.append(f"  Text extract: {meta['text'][:get('image', 'truncation', 'snippet_length')]}")
-    doc_context = "\n".join(context_lines) if context_lines else "No metadata available."
+            context_lines.append(
+                f"  Text extract: {meta['text'][: get('image', 'truncation', 'snippet_length')]}"
+            )
+    doc_context = (
+        "\n".join(context_lines) if context_lines else "No metadata available."
+    )
 
     content_parts = []
     for i, img in enumerate(images):
         meta_label = ""
         if i < len(doc_metadata):
             m = doc_metadata[i]
-            meta_label = f"[Document {i+1}: \"{m['title']}\", Page {m['page_number']}]"
+            meta_label = f'[Document {i + 1}: "{m["title"]}", Page {m["page_number"]}]'
         if meta_label:
             content_parts.append({"type": "text", "text": meta_label})
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=get("image", "jpeg_quality"))
         b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-        content_parts.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
+        content_parts.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            }
+        )
 
-    content_parts.append({"type": "text", "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}"})
+    content_parts.append(
+        {
+            "type": "text",
+            "text": f"\n\nDocuments provided:\n{doc_context}\n\nQuestion: {query}",
+        }
+    )
 
     headers = build_auth_headers(LLM_API_KEY)
 
     response_text = ""
     try:
-        async with httpx.AsyncClient(timeout=get("llm", "http_timeout_seconds")) as client:
+        async with httpx.AsyncClient(
+            timeout=get("llm", "http_timeout_seconds")
+        ) as client:
             async with client.stream(
                 "POST",
                 f"{LLM_BASE_URL}/chat/completions",
@@ -782,7 +1178,7 @@ async def synthesize_generator(query: str, doc_ids: list, query_id: str):
                 async for line in resp.aiter_lines():
                     if not line.startswith("data: "):
                         continue
-                    data = line[len("data: "):]
+                    data = line[len("data: ") :]
                     if data.strip() == "[DONE]":
                         break
                     try:
@@ -820,7 +1216,6 @@ async def api_synthesize(request):
 routes = [
     # Static files
     Route("/static/{filepath:path}", serve_static),
-
     # JSON API endpoints
     Route("/suggestions", api_suggestions),
     Route("/api/search", api_search, methods=["POST"]),
@@ -828,9 +1223,9 @@ routes = [
     Route("/api/full_image", api_full_image),
     Route("/api/sim-map", api_sim_map),
     Route("/api/upload", api_upload, methods=["POST"]),
+    Route("/api/ingest", api_ingest, methods=["POST"]),
     Route("/api/download_url", api_download_url),
     Route("/download_pdf", api_download_pdf),
-
     # SSE streaming endpoints
     Route("/get-message", get_message),
     Route("/api/synthesize", api_synthesize),

@@ -85,6 +85,26 @@ schema pdf_page {
         field s3_key type string {
             indexing: summary | attribute
         }
+        # External connector fields for universal ingestion
+        field source type string {
+            indexing: summary | attribute
+            attribute: fast-search
+        }
+        field source_id type string {
+            indexing: summary | attribute
+        }
+        # Flexible metadata map for connector-specific attributes
+        # Supports arbitrary key-value pairs that can be filtered in queries
+        field metadata type map<string, string> {
+            indexing: summary
+            struct-field key {
+                indexing: attribute
+                attribute: fast-search
+            }
+            struct-field value {
+                indexing: attribute
+            }
+        }
     }
 
     fieldset default {

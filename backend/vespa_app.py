@@ -128,6 +128,7 @@ class VespaQueryClient:
         hits: int = None,
         timeout: str = None,
         sim_map: bool = False,
+        filter_expr: str = "",
         **kwargs,
     ) -> dict:
         """
@@ -139,6 +140,7 @@ class VespaQueryClient:
             q_emb (torch.Tensor): Query embeddings.
             hits (int, optional): Number of hits to retrieve. Defaults to 3.
             timeout (str, optional): Query timeout. Defaults to "10s".
+            filter_expr (str, optional): Additional YQL filter expression.
 
         Returns:
             dict: The formatted query results.
@@ -149,11 +151,16 @@ class VespaQueryClient:
         async with self.app.asyncio(connections=connection_count) as session:
             query_embedding = self.format_q_embs(q_emb)
 
+            # Build YQL with optional filter
+            where_clause = "userQuery()"
+            if filter_expr:
+                where_clause = f"({where_clause}) AND ({filter_expr})"
+
             start = time.perf_counter()
             response: VespaQueryResponse = await session.query(
                 body={
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where userQuery();"
+                        f"select {self.get_fields(sim_map=sim_map)} from {self.VESPA_SCHEMA_NAME} where {where_clause};"
                     ),
                     "ranking": self.get_rank_profile("bm25", sim_map),
                     "query": query,
@@ -235,6 +242,59 @@ class VespaQueryClient:
         """
         return {idx: emb.tolist() for idx, emb in enumerate(q_embs)}
 
+    def build_filter_expression(self, filters: dict) -> str:
+        """
+        Build a YQL filter expression from a filters dictionary.
+
+        Supports filtering on:
+        - source: string match on source field
+        - source_id: string match on source_id field
+        - metadata: key-value pairs matched against metadata map
+        - tags: array contains match
+
+        Args:
+            filters: Dictionary with filter conditions
+
+        Returns:
+            str: YQL filter expression or empty string if no filters
+        """
+        conditions = []
+
+        # Filter by source
+        if "source" in filters and filters["source"]:
+            source = filters["source"].replace('"', '\\"')
+            conditions.append(f'source contains "{source}"')
+
+        # Filter by source_id
+        if "source_id" in filters and filters["source_id"]:
+            source_id = filters["source_id"].replace('"', '\\"')
+            conditions.append(f'source_id contains "{source_id}"')
+
+        # Filter by metadata key-value pairs
+        if "metadata" in filters and isinstance(filters["metadata"], dict):
+            for key, value in filters["metadata"].items():
+                # Vespa map filtering: metadata.key contains value
+                safe_key = key.replace('"', '\\"')
+                safe_value = str(value).replace('"', '\\"')
+                conditions.append(
+                    f'metadata.key contains "{safe_key}" AND metadata.value contains "{safe_value}"'
+                )
+
+        # Filter by tags (array contains)
+        if "tags" in filters and filters["tags"]:
+            if isinstance(filters["tags"], list):
+                for tag in filters["tags"]:
+                    safe_tag = tag.replace('"', '\\"')
+                    conditions.append(f'tags contains "{safe_tag}"')
+            elif isinstance(filters["tags"], str):
+                safe_tag = filters["tags"].replace('"', '\\"')
+                conditions.append(f'tags contains "{safe_tag}"')
+
+        if not conditions:
+            return ""
+
+        return " AND ".join(conditions)
+
     async def get_result_from_query(
         self,
         query: str,
@@ -244,6 +304,7 @@ class VespaQueryClient:
         rerank: bool = False,
         rerank_hits: int = 20,
         final_hits: int = 3,
+        filters: dict = None,
     ) -> Dict[str, Any]:
         """
         Get query results from Vespa based on the ranking method.
@@ -256,6 +317,7 @@ class VespaQueryClient:
             rerank (bool): Whether to perform application-level reranking.
             rerank_hits (int): Number of candidates to fetch for reranking.
             final_hits (int): Number of final results to return after reranking.
+            filters (dict): Optional filters for source, metadata, tags.
 
         Returns:
             Dict[str, Any]: The query results.
@@ -268,6 +330,9 @@ class VespaQueryClient:
         rank_method = ranking.split("_")[0]
         sim_map: bool = len(ranking.split("_")) > 1 and ranking.split("_")[1] == "sim"
 
+        # Build filter expression
+        filter_expr = self.build_filter_expression(filters or {})
+
         # Determine hits to fetch - more if reranking
         hits_to_fetch = rerank_hits if rerank else final_hits
 
@@ -279,6 +344,7 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                filter_expr=filter_expr,
             )
         elif rank_method == "hybrid":  # Hybrid ColPali+BM25
             result = await self.query_vespa_colpali(
@@ -288,9 +354,16 @@ class VespaQueryClient:
                 sim_map=sim_map,
                 include_embedding=rerank,
                 hits=hits_to_fetch,
+                filter_expr=filter_expr,
             )
         elif rank_method == "bm25":
-            result = await self.query_vespa_bm25(query, q_embs, sim_map=sim_map, hits=hits_to_fetch)
+            result = await self.query_vespa_bm25(
+                query,
+                q_embs,
+                sim_map=sim_map,
+                hits=hits_to_fetch,
+                filter_expr=filter_expr,
+            )
         else:
             raise ValueError(f"Unsupported ranking: {rank_method}")
 
@@ -447,6 +520,7 @@ class VespaQueryClient:
         timeout: str = None,
         sim_map: bool = False,
         include_embedding: bool = False,
+        filter_expr: str = "",
         **kwargs,
     ) -> dict:
         """
@@ -462,6 +536,7 @@ class VespaQueryClient:
             timeout (str, optional): Query timeout. Defaults to "10s".
             sim_map (bool, optional): Whether to return similarity map features. Defaults to False.
             include_embedding (bool, optional): Whether to include embeddings for reranking. Defaults to False.
+            filter_expr (str, optional): Additional YQL filter expression.
 
         Returns:
             dict: The formatted query results.
@@ -489,12 +564,18 @@ class VespaQueryClient:
                 binary_query_embeddings, target_hits_per_query_tensor
             )
             query_tensors.update(nn_query_dict)
+
+            # Build YQL with optional filter
+            where_clause = f"{nn_string} or userQuery()"
+            if filter_expr:
+                where_clause = f"({where_clause}) AND ({filter_expr})"
+
             response: VespaQueryResponse = await session.query(
                 body={
                     **query_tensors,
                     "presentation.timing": True,
                     "yql": (
-                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {nn_string} or userQuery()"
+                        f"select {self.get_fields(sim_map=sim_map, include_embedding=include_embedding)} from {self.VESPA_SCHEMA_NAME} where {where_clause}"
                     ),
                     "ranking.profile": self.get_rank_profile(
                         ranking=ranking, sim_map=sim_map

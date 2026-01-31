@@ -76,7 +76,7 @@ def sanitize_text(text: str) -> str:
     if not text:
         return text
     # Remove ASCII control chars (0x00-0x1F and 0x7F) except tab, newline, carriage return
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
 
 
 def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
@@ -98,7 +98,9 @@ def render_page(page, dpi: int = None) -> Tuple[Image.Image, str]:
     return img, text
 
 
-def pdf_to_images(file_bytes: bytes, dpi: int = None) -> Tuple[List[Image.Image], List[str]]:
+def pdf_to_images(
+    file_bytes: bytes, dpi: int = None
+) -> Tuple[List[Image.Image], List[str]]:
     """
     Convert PDF bytes to list of PIL Images and extracted text per page.
 
@@ -120,7 +122,9 @@ def pdf_to_images(file_bytes: bytes, dpi: int = None) -> Tuple[List[Image.Image]
     return images, texts
 
 
-def generate_embeddings(model, processor, images: List[Image.Image], device: str, batch_size: int = None) -> List[Tuple[dict, dict]]:
+def generate_embeddings(
+    model, processor, images: List[Image.Image], device: str, batch_size: int = None
+) -> List[Tuple[dict, dict]]:
     """
     Generate ColQwen2.5 embeddings for images.
 
@@ -134,7 +138,7 @@ def generate_embeddings(model, processor, images: List[Image.Image], device: str
     all_embeddings = []
 
     for i in range(0, len(images), batch_size):
-        batch_images = images[i:i + batch_size]
+        batch_images = images[i : i + batch_size]
 
         with torch.no_grad():
             batch_inputs = processor.process_images(batch_images).to(device)
@@ -176,9 +180,7 @@ def feed_document(app: Vespa, doc: dict) -> Tuple[str, bool, str]:
     try:
         schema = get("vespa", "schema_name")
         response = app.feed_data_point(
-            schema=schema,
-            data_id=doc["id"],
-            fields=doc["fields"]
+            schema=schema, data_id=doc["id"], fields=doc["fields"]
         )
         if response.status_code == 200:
             return doc["id"], True, ""
@@ -198,7 +200,9 @@ def generate_doc_id(pdf_bytes: bytes, title: str) -> str:
     content_hash = hashlib.md5(pdf_bytes).hexdigest()[:hash_length]
     # Create safe title slug: alphanumeric only, max chars from config
     slug_max_length = get("ingestion", "doc_id_slug_max_length")
-    safe_title = re.sub(r'[^a-zA-Z0-9]', '_', title)[:slug_max_length].strip('_').lower()
+    safe_title = (
+        re.sub(r"[^a-zA-Z0-9]", "_", title)[:slug_max_length].strip("_").lower()
+    )
     if not safe_title:
         safe_title = "document"
     return f"{safe_title}_{content_hash}"
@@ -220,6 +224,9 @@ def ingest_pdf(
     vlm_api_key: Optional[str] = None,
     detection_method: str = "auto",
     s3_key: Optional[str] = None,
+    source: Optional[str] = None,
+    source_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> Tuple[bool, str, int]:
     """
     Main ingestion function: validates, processes, and feeds a PDF to Vespa.
@@ -242,6 +249,10 @@ def ingest_pdf(
         use_vlm_detection: Use VLM for semantic region labeling (via OpenRouter/OpenAI/Ollama)
         vlm_api_key: API key for VLM (defaults to OPENROUTER_API_KEY or OPENAI_API_KEY env var)
         detection_method: Region detection strategy ("auto", "pdf_vector", "heuristic", "vlm_legacy")
+        s3_key: Optional S3 key for original file reference
+        source: Optional source identifier for external connector (e.g., "procore", "sharepoint")
+        source_id: Optional external system ID for the document
+        metadata: Optional dict of arbitrary key-value pairs for filtering
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -253,6 +264,13 @@ def ingest_pdf(
     # Default tags to empty list
     if tags is None:
         tags = []
+
+    # Default metadata to empty dict and ensure all values are strings
+    if metadata is None:
+        metadata = {}
+    else:
+        # Ensure all metadata values are strings for Vespa map<string, string>
+        metadata = {str(k): str(v) for k, v in metadata.items()}
 
     # Resolve defaults from config
     if batch_size is None:
@@ -313,16 +331,21 @@ def ingest_pdf(
                     continue
 
                 # Feed each region as a document
-                for region_idx, ((region_img, region_meta), (bin_emb, float_emb)) in enumerate(
-                    zip(region_results, region_embeddings)
-                ):
+                for region_idx, (
+                    (region_img, region_meta),
+                    (bin_emb, float_emb),
+                ) in enumerate(zip(region_results, region_embeddings)):
                     is_full_page = region_meta.region_type == "full_page"
                     if is_full_page:
                         doc_id = page_doc_id
                     else:
                         doc_id = f"{page_doc_id}_region_{region_idx}"
 
-                    snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
+                    snippet = (
+                        page_text[:snippet_ingest_length] + "..."
+                        if len(page_text) > snippet_ingest_length
+                        else page_text
+                    )
                     if not snippet:
                         snippet = f"Page {page_num + 1} of {filename}"
                     if not is_full_page and region_meta.label:
@@ -347,10 +370,17 @@ def ingest_pdf(
                             "queries": [],
                             "is_region": not is_full_page,
                             "parent_doc_id": page_doc_id if not is_full_page else "",
-                            "region_label": region_meta.label if not is_full_page else "",
+                            "region_label": region_meta.label
+                            if not is_full_page
+                            else "",
                             "region_type": region_meta.region_type,
-                            "region_bbox": json.dumps(region_meta.to_dict()) if not is_full_page else "",
+                            "region_bbox": json.dumps(region_meta.to_dict())
+                            if not is_full_page
+                            else "",
                             "s3_key": s3_key or "",
+                            "source": source or "",
+                            "source_id": source_id or "",
+                            "metadata": metadata,
                         },
                     }
 
@@ -370,7 +400,11 @@ def ingest_pdf(
                     failed_docs.append((page_doc_id, f"Embedding error: {e}"))
                     continue
 
-                snippet = page_text[:snippet_ingest_length] + "..." if len(page_text) > snippet_ingest_length else page_text
+                snippet = (
+                    page_text[:snippet_ingest_length] + "..."
+                    if len(page_text) > snippet_ingest_length
+                    else page_text
+                )
                 if not snippet:
                     snippet = f"Page {page_num + 1} of {filename}"
 
@@ -397,6 +431,9 @@ def ingest_pdf(
                         "region_type": "full_page",
                         "region_bbox": "",
                         "s3_key": s3_key or "",
+                        "source": source or "",
+                        "source_id": source_id or "",
+                        "metadata": metadata,
                     },
                 }
 
@@ -411,7 +448,11 @@ def ingest_pdf(
     if docs_indexed == 0:
         return False, f"Failed to index any documents. Errors: {failed_docs}", 0
     elif failed_docs:
-        return True, f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.", docs_indexed
+        return (
+            True,
+            f"Indexed {docs_indexed} documents. {len(failed_docs)} failed.",
+            docs_indexed,
+        )
     else:
         return True, f"Successfully indexed {docs_indexed} documents.", docs_indexed
 
@@ -448,6 +489,9 @@ def ingest_image(
     tags: Optional[List[str]] = None,
     batch_size: int = None,
     s3_key: Optional[str] = None,
+    source: Optional[str] = None,
+    source_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> Tuple[bool, str, int]:
     """
     Ingest a single image file (JPG, PNG, GIF, TIFF) with ColPali embeddings.
@@ -467,6 +511,9 @@ def ingest_image(
         tags: Optional list of tags
         batch_size: Batch size for embedding generation
         s3_key: Optional S3 key for original file reference
+        source: Optional source identifier for external connector (e.g., "procore", "sharepoint")
+        source_id: Optional external system ID for the document
+        metadata: Optional dict of arbitrary key-value pairs for filtering
 
     Returns:
         Tuple of (success, message, pages_indexed)
@@ -475,6 +522,10 @@ def ingest_image(
         title = Path(filename).stem
     if tags is None:
         tags = []
+    if metadata is None:
+        metadata = {}
+    else:
+        metadata = {str(k): str(v) for k, v in metadata.items()}
     if batch_size is None:
         batch_size = get("ingestion", "batch_size")
 
@@ -530,6 +581,9 @@ def ingest_image(
             "region_type": "full_page",
             "region_bbox": "",
             "s3_key": s3_key or "",
+            "source": source or "",
+            "source_id": source_id or "",
+            "metadata": metadata,
         },
     }
 

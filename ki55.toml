@@ -59,8 +59,8 @@ target_hits_per_query_tensor = 100
 hnsw_explore_additional_hits = 300
 default_hits = 3
 rerank_count = 100
-select_fields = "id,title,url,blur_image,page_number,snippet,text,s3_key"
-select_fields_with_embedding = "id,title,url,blur_image,page_number,snippet,text,s3_key,embedding_float"
+select_fields = "id,title,url,blur_image,page_number,snippet,text,s3_key,source,source_id,metadata"
+select_fields_with_embedding = "id,title,url,blur_image,page_number,snippet,text,s3_key,source,source_id,metadata,embedding_float"
 
 [vespa.mtls]
 key_path = "/tmp/vespa-data-plane-private-key.pem"
@@ -197,3 +197,14 @@ max_items = 5
 
 [s3]
 presigned_url_expiry_seconds = 3600
+
+[connectors]
+# External connector configuration for universal file ingestion
+# The /api/ingest endpoint accepts files from any external system with flexible metadata
+enabled = true
+# Maximum metadata keys per document (to prevent abuse)
+max_metadata_keys = 50
+# Maximum length of metadata key or value
+max_metadata_value_length = 1000
+# Known sources can have custom validation rules (optional)
+# Add source-specific config sections like [connectors.sources.procore]
