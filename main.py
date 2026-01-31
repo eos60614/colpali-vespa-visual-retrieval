@@ -30,7 +30,11 @@ from backend.colpali import SimMapGenerator
 from backend.connectors.vespa.client import VespaQueryClient
 from backend.ingestion.pdf.processor import ingest_pdf, validate_pdf
 from backend.connectors.storage.s3 import generate_presigned_url
-from backend.query.ranking.llm import llm_rerank_results, is_llm_rerank_enabled, get_llm_rerank_candidates
+
+# Gateway API
+from backend.gateway.api import gateway_routes
+from backend.gateway.jobs import job_queue
+from backend.gateway.processor import setup_job_processor
 
 # Initialize centralized logging
 LOG_LEVEL = get("app", "log_level").upper()
@@ -72,11 +76,24 @@ def generate_query_id(query: str, ranking_value: str) -> int:
 # =============================================================================
 
 async def startup():
-    """Initialize the ColPali model and start Vespa keepalive task."""
+    """Initialize the ColPali model, gateway services, and start background tasks."""
     global sim_map_generator
     sim_map_generator = SimMapGenerator(logger=logger)
     asyncio.create_task(poll_vespa_keepalive())
+
+    # Initialize gateway job queue and processor
+    setup_job_processor()
+    job_queue.start()
+    logger.info("Gateway job queue started")
+
     logger.info("Application startup complete")
+
+
+async def shutdown():
+    """Graceful shutdown: stop job queue and cleanup."""
+    job_queue.stop()
+    logger.info("Gateway job queue stopped")
+    logger.info("Application shutdown complete")
 
 
 async def poll_vespa_keepalive():
@@ -834,7 +851,7 @@ routes = [
     # SSE streaming endpoints
     Route("/get-message", get_message),
     Route("/api/synthesize", api_synthesize),
-]
+] + gateway_routes  # Universal Gateway API v1 endpoints
 
 middleware = [
     Middleware(CorrelationIdMiddleware),
@@ -846,6 +863,7 @@ app = Starlette(
     routes=routes,
     middleware=middleware,
     on_startup=[startup],
+    on_shutdown=[shutdown],
 )
 
 # Alias for compatibility with existing uvicorn command
