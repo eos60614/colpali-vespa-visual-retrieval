@@ -97,6 +97,11 @@ Browser → Next.js (web/) → JSON API routes → Starlette (main.py)
 
 **`backend/ingestion/`** — Procore PostgreSQL ingestion subsystem. Auto-discovers schema, transforms rows to Vespa documents with relationship/navigation metadata, detects and downloads S3/URL file references, supports incremental sync via SQLite-backed change tracking.
 
+**`backend/ingestion/connectors/`** — Source connector architecture for external file ingestion with rich metadata:
+- `base.py` — `FileMetadata` dataclass (~40 fields), `SourceConnector` abstract base class, `DocumentCategory`/`DocumentStatus` enums
+- `procore.py` — `ProcoreConnector` extracting metadata from DB records (projects, vendors, users)
+- Connectors populate metadata (source_system, project_id, category, discipline, status, company, etc.) that flows into Vespa for filtering
+
 **`web/`** — Next.js 16/React 19 frontend (TypeScript). Primary UI for the application. Runs on port 3000 (`npm run dev`). Consumes JSON APIs from `main.py`. Key features: visual search with multi-select synthesis, similarity map viewer, document upload, streaming AI chat. See `web/CLAUDE.md` for detailed frontend documentation.
 
 ### Embedding & Ranking Pipeline
@@ -129,9 +134,30 @@ All LLM/AI calls go through a single OpenAI-compatible API abstraction (`resolve
 
 ### Vespa Schemas
 
-- **`pdf_page.sd`** — Main document schema: embeddings (binary + float), text fields (title, text, snippet, tags with BM25), images (blur + full as base64). Region documents link back via `parent_doc_id`.
+- **`pdf_page.sd`** — Main document schema: embeddings (binary + float), text fields (title, text, snippet, tags with BM25), images (blur + full as base64). Region documents link back via `parent_doc_id`. Includes filterable metadata fields (source_system, project_id, category, discipline, status, company, file_type, etc.) with `fast-search` indexing.
 - **`procore_record.sd`** — Database records with relationship navigation metadata, file references, schema context for agents.
 - **`procore_schema_metadata.sd`** — Schema metadata for agent-assisted navigation.
+
+### Search Filtering
+
+The `/api/search` endpoint accepts an optional `filters` parameter for metadata-based filtering:
+
+```json
+{
+  "query": "floor plan",
+  "ranking": "hybrid",
+  "filters": {
+    "source_system": "procore",
+    "project_id": "123",
+    "category": ["drawing", "specification"],
+    "discipline": "architectural",
+    "status": "approved",
+    "is_current_revision": true
+  }
+}
+```
+
+Supported filter fields: `source_system`, `project_id`, `project_name`, `category`, `document_type`, `discipline`, `status`, `company`, `company_id`, `file_type`, `author`, `is_current_revision`, `source_modified_after`. Filter values can be strings, lists (OR logic), or booleans. Filters are converted to YQL clauses via `VespaQueryClient.build_filter_clause()`.
 
 ## Code Conventions
 
